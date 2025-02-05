@@ -1,5 +1,6 @@
-# pipseek 📦
+![PIPSEEK Banner](https://raw.githubusercontent.com/ohmybahgosh/pipseek/refs/heads/main/PIPSEEK-README-BANNER.png)
 
+# pipseek 📦 
 > 🔍 [https://github.com/OhMyBahGosh/pipseek](https://github.com/OhMyBahGosh/pipseek)
 
 A modern, feature-rich command-line tool for searching PyPI packages with beautiful formatting and real-time updates. Designed to replace the deprecated pip search functionality with an enhanced user experience.
