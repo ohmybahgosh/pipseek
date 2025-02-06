@@ -1,11 +1,17 @@
 ![PIPSEEK Banner](https://raw.githubusercontent.com/ohmybahgosh/pipseek/refs/heads/main/PIPSEEK-README-BANNER.png)
 
-# pipseek 📦 
-> 🔍 [https://github.com/OhMyBahGosh/pipseek](https://github.com/OhMyBahGosh/pipseek)
+## A modern, feature-rich command-line tool for searching PyPI packages with beautiful formatting and real-time updates. Designed to replace the deprecated pip search functionality with an enhanced user experience.
 
-A modern, feature-rich command-line tool for searching PyPI packages with beautiful formatting and real-time updates. Designed to replace the deprecated pip search functionality with an enhanced user experience.
+## Attribution Notice
 
-> **Important Credit**: The proof-of-work challenge solution implementation in this tool was inspired by [Long0x0's work](https://github.com/victorgarric/pip_search/issues/44#issuecomment-2565442916).
+The proof-of-work challenge solution implementation in this tool is based on the work of [Long0x0](https://github.com/victorgarric/pip_search/issues/44#issuecomment-2565442916).
+ 
+     
+
+# Example Output 🖥️
+
+[![asciicast](https://asciinema.org/a/C4kuX93qaywOVpj3n6dny6ufY.svg)](https://asciinema.org/a/C4kuX93qaywOVpj3n6dny6ufY)
+ 
 
 ## Why pipseek? 🤔
 
@@ -73,10 +79,6 @@ The script will display detailed information for each package, including:
 - Author information
 - License details
 - Homepage URL
-
-## Example Output 🖥️
-
-COMING SOON
 
 ## Dependencies 📚
 
