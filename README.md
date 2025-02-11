@@ -10,7 +10,7 @@ The proof-of-work challenge solution implementation in this tool is based on the
 
 # Example Output 🖥️
 
-[![asciicast](https://asciinema.org/a/C4kuX93qaywOVpj3n6dny6ufY.svg)](https://asciinema.org/a/C4kuX93qaywOVpj3n6dny6ufY)
+[![asciicast](https://asciinema.org/a/TI1QL2QBOi8oKKQVXlXCfwmyz.svg)](https://asciinema.org/a/TI1QL2QBOi8oKKQVXlXCfwmyz)
  
 
 ## Why pipseek? 🤔
