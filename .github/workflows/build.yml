@@ -1,0 +1,84 @@
+name: Build PIPSeek Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'  # Only run on version tags
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            output_name: pipseek-linux
+          - os: windows-latest
+            output_name: pipseek-windows.exe
+          - os: macos-latest
+            output_name: pipseek-macos
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install nuitka ordered-set
+        pip install textual rich bs4 requests
+        
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y patchelf
+        
+    - name: Build with Nuitka
+      run: |
+        python -m nuitka --standalone --onefile --assume-yes-for-downloads \
+          --follow-imports --include-package=textual --include-package=rich \
+          --include-package=bs4 --include-package=requests --include-module=signal \
+          --include-module=concurrent.futures --include-module=urllib.parse \
+          --include-module=shutil --include-module=datetime --include-module=time \
+          --disable-console=no --company-name="OhMyBahGosh" --product-name="PIPSeek" \
+          --copyright="Copyright © 2024 - GNU General Public License v3.0" --file-version="1.0.0" \
+          --enable-plugin=anti-bloat --output-filename=${{ matrix.output_name }} \
+          pipseek.py
+
+    - name: Upload binary
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.output_name }}
+        path: ${{ matrix.output_name }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: |
+            pipseek-linux/pipseek-linux
+            pipseek-windows.exe/pipseek-windows.exe
+            pipseek-macos/pipseek-macos
+          draft: false
+          prerelease: false
