@@ -43,23 +43,41 @@ jobs:
         sudo apt-get install -y patchelf
         
     - name: Build with Nuitka
+      shell: bash
       run: |
-        python -m nuitka --standalone --onefile --assume-yes-for-downloads \
-          --follow-imports --include-package=textual --include-package=rich \
-          --include-package=bs4 --include-package=requests --include-module=signal \
-          --include-module=concurrent.futures --include-module=urllib.parse \
-          --include-module=shutil --include-module=datetime --include-module=time \
-          --include-module=os --include-module=posixpath --include-module=_curses \
-          --enable-console --company-name="OhMyBahGosh" --product-name="PIPSeek" \
-          --copyright="Copyright © 2024 - GNU General Public License v3.0" --file-version="1.0.0" \
-          --enable-plugin=anti-bloat --output-filename=${{ matrix.output_name }} \
-          pipseek.py
+        python -m nuitka \
+          --standalone \
+          --onefile \
+          --assume-yes-for-downloads \
+          --follow-imports \
+          --include-package=textual \
+          --include-package=rich \
+          --include-package=bs4 \
+          --include-package=requests \
+          --include-module=signal \
+          --include-module=concurrent.futures \
+          --include-module=urllib.parse \
+          --include-module=shutil \
+          --include-module=datetime \
+          --include-module=time \
+          --include-module=os \
+          --include-module=posixpath \
+          --include-module=_curses \
+          --static-libpython=yes \
+          --company-name="OhMyBahGosh" \
+          --product-name="PIPSeek" \
+          --copyright="Copyright © 2024 - GNU General Public License v3.0" \
+          --file-version="1.0.0" \
+          --enable-plugin=anti-bloat \
+          --output-dir=dist \
+          --output-filename=${{ matrix.output_name }} \
+          ./pipseek.py
 
     - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.output_name }}
-        path: ${{ matrix.output_name }}
+        path: dist/${{ matrix.output_name }}
         if-no-files-found: error
 
   release:
