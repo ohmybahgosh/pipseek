@@ -41,40 +41,11 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y patchelf
-        
-    - name: Build with Nuitka (Windows)
-      if: matrix.os == 'windows-latest'
-      shell: bash
-      run: |
-        python -m nuitka \
-          --standalone \
-          --onefile \
-          --assume-yes-for-downloads \
-          --follow-imports \
-          --include-package=textual \
-          --include-package=rich \
-          --include-package=bs4 \
-          --include-package=requests \
-          --include-module=signal \
-          --include-module=concurrent.futures \
-          --include-module=urllib.parse \
-          --include-module=shutil \
-          --include-module=datetime \
-          --include-module=time \
-          --include-module=os \
-          --include-module=posixpath \
-          --include-module=_curses \
-          --include-module=win32api \
-          --company-name="OhMyBahGosh" \
-          --product-name="PIPSeek" \
-          --copyright="Copyright © 2024 - GNU General Public License v3.0" \
-          --file-version="1.0.0" \
-          --output-dir=dist \
-          --output-filename=pipseek-windows.exe \
-          pipseek.py
 
-    - name: Build with Nuitka (Unix)
-      if: matrix.os != 'windows-latest'
+    - name: Create output directory
+      run: mkdir -p dist
+        
+    - name: Build with Nuitka
       shell: bash
       run: |
         python -m nuitka \
@@ -95,14 +66,13 @@ jobs:
           --include-module=os \
           --include-module=posixpath \
           --include-module=curses \
-          --static-libpython=yes \
-          --company-name="OhMyBahGosh" \
-          --product-name="PIPSeek" \
-          --copyright="Copyright © 2024 - GNU General Public License v3.0" \
-          --file-version="1.0.0" \
-          --output-dir=dist \
           --output-filename=${{ matrix.output_name }} \
           pipseek.py
+
+    - name: Move binary to dist
+      shell: bash
+      run: |
+        mv ${{ matrix.output_name }} dist/
 
     - name: Upload binary
       uses: actions/upload-artifact@v4
