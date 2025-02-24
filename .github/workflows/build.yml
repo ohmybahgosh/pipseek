@@ -50,7 +50,7 @@ jobs:
           --include-module=concurrent.futures --include-module=urllib.parse \
           --include-module=shutil --include-module=datetime --include-module=time \
           --include-module=os --include-module=posixpath --include-module=_curses \
-          --disable-console=no --company-name="OhMyBahGosh" --product-name="PIPSeek" \
+          --enable-console --company-name="OhMyBahGosh" --product-name="PIPSeek" \
           --copyright="Copyright © 2024 - GNU General Public License v3.0" --file-version="1.0.0" \
           --enable-plugin=anti-bloat --output-filename=${{ matrix.output_name }} \
           pipseek.py
