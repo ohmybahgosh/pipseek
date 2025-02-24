@@ -23,10 +23,10 @@ jobs:
             output_name: pipseek-macos
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.9'
         
@@ -49,16 +49,18 @@ jobs:
           --include-package=bs4 --include-package=requests --include-module=signal \
           --include-module=concurrent.futures --include-module=urllib.parse \
           --include-module=shutil --include-module=datetime --include-module=time \
+          --include-module=os --include-module=posixpath --include-module=_curses \
           --disable-console=no --company-name="OhMyBahGosh" --product-name="PIPSeek" \
           --copyright="Copyright © 2024 - GNU General Public License v3.0" --file-version="1.0.0" \
           --enable-plugin=anti-bloat --output-filename=${{ matrix.output_name }} \
           pipseek.py
 
     - name: Upload binary
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.output_name }}
         path: ${{ matrix.output_name }}
+        if-no-files-found: error
 
   release:
     name: Create Release
@@ -68,7 +70,7 @@ jobs:
     
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         
       - name: Create Release
         id: create_release
@@ -82,3 +84,4 @@ jobs:
             pipseek-macos/pipseek-macos
           draft: false
           prerelease: false
+          generate_release_notes: true
