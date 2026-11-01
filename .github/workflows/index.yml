@@ -1,0 +1,49 @@
+name: Search index
+
+# Rebuilds the full PyPI search index (names, summaries, keywords) and publishes it as the
+# `pypi-index.tsv.gz` asset on the `index` release, which pipseek clients download.
+# Incremental: only projects that changed since the last run are re-fetched.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: search-index
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e .
+
+      - name: Download previous index
+        run: |
+          gh release download index --pattern pypi-index.tsv.gz --dir prev || echo "No previous index"
+          ls -la prev || true
+
+      - name: Build index
+        run: |
+          PREV=""
+          if [ -f prev/pypi-index.tsv.gz ]; then PREV="--previous prev/pypi-index.tsv.gz"; fi
+          python -m pipseek.build_index $PREV --out pypi-index.tsv.gz --time-budget 18000 --concurrency 32
+
+      - name: Publish
+        run: |
+          if ! gh release view index >/dev/null 2>&1; then
+            gh release create index --title "Search index" --latest=false \
+              --notes "Prebuilt PyPI search index used by pipseek. Updated daily by the Search index workflow."
+          fi
+          gh release upload index pypi-index.tsv.gz --clobber

@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pipseek"
+dynamic = ["version"]
+description = "Search PyPI from your terminal. A fast, interactive replacement for the retired `pip search`."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+authors = [{ name = "OhMyBahGosh" }]
+keywords = ["pypi", "pip", "search", "pip-search", "cli", "tui", "textual", "packages"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development",
+    "Topic :: System :: Software Distribution",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "requests>=2.31",
+    "rich>=13.7",
+    "textual>=0.80",
+    "packaging>=23.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+pipseek = "pipseek.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ohmybahgosh/pipseek"
+Issues = "https://github.com/ohmybahgosh/pipseek/issues"
+
+[tool.hatch.version]
+path = "src/pipseek/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pipseek"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["UP007", "UP045"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
