@@ -5,7 +5,7 @@ import pytest
 from pipseek import cli
 from pipseek.cache import Cache
 from pipseek.index import PackageIndex, normalize, tokens
-from pipseek.pypi import PackageInfo, github_repo, parse_package
+from pipseek.pypi import PackageInfo, parse_package, source_project
 from pipseek.search import Searcher
 
 RECORDS = [
@@ -155,16 +155,17 @@ def test_parse_package_cleans_fields():
 @pytest.mark.parametrize(
     "url, expected",
     [
-        ("https://github.com/psf/requests", ("psf", "requests")),
-        ("https://github.com/jane/demo.git", ("jane", "demo")),
-        ("https://github.com/jane/tag.git-tools", ("jane", "tag.git-tools")),
+        ("https://github.com/psf/requests", "github.com/psf/requests"),
+        ("https://www.github.com/Jane/Demo.git", "github.com/jane/demo"),
+        ("https://github.com/jane/tag.git-tools", "github.com/jane/tag.git-tools"),
+        ("https://gitlab.com/group/proj", "gitlab.com/group/proj"),
         ("https://github.com/sponsors/jane", None),
-        ("https://gitlab.com/a/b", None),
+        ("https://example.com/a/b", None),
         (None, None),
     ],
 )
-def test_github_repo(url, expected):
-    assert github_repo(url) == expected
+def test_source_project(url, expected):
+    assert source_project(url) == expected
 
 
 def test_update_available():
@@ -196,3 +197,26 @@ def test_cli_json(monkeypatch, tmp_path, capsys, index):
 
 class _FakeClientWithSession(FakeClient):
     session = None
+
+
+def test_cli_plain(monkeypatch, tmp_path, capsys, index):
+    monkeypatch.setenv("PIPSEEK_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.PackageIndex, "load", classmethod(lambda cls, **kw: index))
+    monkeypatch.setattr(cli, "PyPIClient", lambda **kw: _FakeClientWithSession())
+    assert cli.main(["flask", "--plain", "-n", "2"]) == 0
+    assert "flask-login" in capsys.readouterr().out
+    assert cli.main(["flask", "--plain", "--no-stats"]) == 0
+    assert cli.main(["flask", "--plain", "--no-github"]) == 0
+
+
+def test_package_panel_renders_stats():
+    from rich.console import Console
+
+    from pipseek.render import package_panel
+
+    pkg = PackageInfo(name="x", version="1.0", source_project="gitlab.com/a/x", stars=1200, forks=3)
+    pkg.scorecard = 7.5
+    console = Console(record=True, width=100)
+    console.print(package_panel(pkg, full=True))
+    text = console.export_text()
+    assert "GitLab" in text and "1,200 stars" in text and "7.5/10" in text

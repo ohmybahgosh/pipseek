@@ -37,8 +37,8 @@ class ResultItem(ListItem):
         meta.append(human_age(pkg.released), style=age_style(pkg.released))
         if pkg.downloads_30d:
             meta.append(f"  {human_count(pkg.downloads_30d)} dl/30d", style="cyan")
-        if pkg.github_stars is not None:
-            meta.append(f"  {human_count(pkg.github_stars)} stars", style="magenta")
+        if pkg.stars is not None:
+            meta.append(f"  {human_count(pkg.stars)} stars", style="magenta")
         summary = Text(pkg.summary or "no description", style="dim", overflow="ellipsis")
         summary.truncate(200)
         yield Label(line)

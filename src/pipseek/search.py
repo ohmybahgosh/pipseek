@@ -71,7 +71,7 @@ class Searcher:
         if sort == "updated":
             packages.sort(key=lambda p: p.released or "", reverse=True)
         elif sort == "stars":
-            packages.sort(key=lambda p: p.github_stars or -1, reverse=True)
+            packages.sort(key=lambda p: p.stars or -1, reverse=True)
 
         suggestions: list[str] = []
         single_word = len(query.split()) == 1

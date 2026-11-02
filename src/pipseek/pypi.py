@@ -1,14 +1,13 @@
-"""PyPI JSON API client, GitHub stats, and local install detection."""
+"""PyPI JSON API client and project stats from deps.dev."""
 
 from __future__ import annotations
 
-import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 from packaging.version import InvalidVersion, Version
@@ -18,10 +17,12 @@ from pipseek.cache import Cache
 
 USER_AGENT = f"pipseek/{__version__} (+https://github.com/ohmybahgosh/pipseek)"
 DETAILS_TTL = 3600
-GITHUB_TTL = 6 * 3600
+STATS_TTL = 12 * 3600
+DEPS_DEV_URL = "https://api.deps.dev/v3/projects/{}"
 
 _EMPTY = {"", "none", "unknown", "n/a", "unknown author", "null"}
-_GITHUB_RE = re.compile(r"^/([^/]+)/([^/#?]+)")
+_REPO_PATH_RE = re.compile(r"^/([^/]+)/([^/#?]+)")
+_SOURCE_HOSTS = ("github.com", "gitlab.com", "bitbucket.org")
 _REPO_KEYS = ("source", "source code", "repository", "github", "code", "homepage", "home")
 
 
@@ -50,9 +51,11 @@ class PackageInfo:
     extras: list[str] = field(default_factory=list)
     yanked: bool = False
     downloads_30d: Optional[int] = None
-    github_stars: Optional[int] = None
-    github_forks: Optional[int] = None
-    github_archived: Optional[bool] = None
+    source_project: Optional[str] = None  # e.g. github.com/psf/requests
+    stars: Optional[int] = None
+    forks: Optional[int] = None
+    open_issues: Optional[int] = None
+    scorecard: Optional[float] = None  # OpenSSF Scorecard, 0-10
     installed_version: Optional[str] = None
 
     @property
@@ -139,22 +142,23 @@ def parse_package(data: dict) -> PackageInfo:
     )
 
 
-def github_repo(url: Optional[str]) -> Optional[tuple[str, str]]:
-    """Extract (owner, repo) from a GitHub URL, or None."""
+def source_project(url: Optional[str]) -> Optional[str]:
+    """GitHub/GitLab/Bitbucket URL -> deps.dev project key, e.g. github.com/psf/requests."""
     if not url:
         return None
     parsed = urlparse(url)
-    if parsed.netloc.lower() not in ("github.com", "www.github.com"):
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host not in _SOURCE_HOSTS:
         return None
-    m = _GITHUB_RE.match(parsed.path)
+    m = _REPO_PATH_RE.match(parsed.path)
     if not m:
         return None
     owner, repo = m.group(1), m.group(2)
     if repo.endswith(".git"):
         repo = repo[:-4]
-    if owner in ("sponsors", "orgs", "features", "topics"):
+    if owner.lower() in ("sponsors", "orgs", "features", "topics", "users"):
         return None
-    return owner, repo
+    return f"{host}/{owner}/{repo}".lower()
 
 
 class PyPIClient:
@@ -162,7 +166,7 @@ class PyPIClient:
         self,
         cache: Optional[Cache] = None,
         session: Optional[requests.Session] = None,
-        github: bool = True,
+        stats: bool = True,
         installed: Optional[Callable[[str], Optional[str]]] = None,
         timeout: float = 10,
         max_workers: int = 12,
@@ -170,12 +174,10 @@ class PyPIClient:
         self.cache = cache or Cache()
         self.session = session or requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
-        self.github = github
+        self.stats = stats
         self.installed = installed
         self.timeout = timeout
         self.max_workers = max_workers
-        self.github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-        self._github_rate_limited = False
 
     def package(self, name: str, downloads: Optional[int] = None) -> Optional[PackageInfo]:
         key = f"pkg/{name.lower()}"
@@ -199,8 +201,8 @@ class PyPIClient:
         pkg.downloads_30d = downloads
         if self.installed:
             pkg.installed_version = self.installed(pkg.name)
-        if self.github:
-            self._add_github(pkg)
+        if self.stats:
+            self._add_project_stats(pkg)
         return pkg
 
     def packages(
@@ -214,42 +216,42 @@ class PyPIClient:
             results = pool.map(lambda n: self.package(n, downloads.get(n)), names)
             return [r for r in results if r is not None]
 
-    def _add_github(self, pkg: PackageInfo) -> None:
-        repo = github_repo(pkg.repository) or github_repo(pkg.homepage)
-        if not repo:
+    def _add_project_stats(self, pkg: PackageInfo) -> None:
+        """Stars, forks, issues and OpenSSF Scorecard from deps.dev (Google; free, no key)."""
+        project = source_project(pkg.repository) or source_project(pkg.homepage)
+        if not project:
             return
-        key = f"gh/{repo[0].lower()}/{repo[1].lower()}"
-        stats = self.cache.get(key, GITHUB_TTL)
+        pkg.source_project = project
+        key = f"proj/{project}"
+        stats = self.cache.get(key, STATS_TTL)
         if stats is None:
-            if self._github_rate_limited:
-                return
-            headers = {"Accept": "application/vnd.github+json"}
-            if self.github_token:
-                headers["Authorization"] = f"Bearer {self.github_token}"
             try:
                 resp = self.session.get(
-                    f"https://api.github.com/repos/{repo[0]}/{repo[1]}",
-                    headers=headers,
-                    timeout=self.timeout,
+                    DEPS_DEV_URL.format(quote(project, safe="")), timeout=self.timeout
                 )
             except requests.RequestException:
                 return
-            if resp.status_code in (403, 429):
-                self._github_rate_limited = True
-                return
-            if resp.status_code != 200:
+            if resp.status_code == 404:
                 stats = {}
+            elif resp.status_code != 200:
+                return  # transient; try again next time
             else:
-                body = resp.json()
+                try:
+                    body = resp.json()
+                except ValueError:
+                    return
+                score = (body.get("scorecard") or {}).get("overallScore")
                 stats = {
-                    "stars": body.get("stargazers_count"),
-                    "forks": body.get("forks_count"),
-                    "archived": body.get("archived"),
+                    "stars": body.get("starsCount"),
+                    "forks": body.get("forksCount"),
+                    "issues": body.get("openIssuesCount"),
+                    "scorecard": score,
                 }
             self.cache.set(key, stats)
-        pkg.github_stars = stats.get("stars")
-        pkg.github_forks = stats.get("forks")
-        pkg.github_archived = stats.get("archived")
+        pkg.stars = stats.get("stars")
+        pkg.forks = stats.get("forks")
+        pkg.open_issues = stats.get("issues")
+        pkg.scorecard = stats.get("scorecard")
 
 
 def days_since(iso_date: Optional[str]) -> Optional[int]:

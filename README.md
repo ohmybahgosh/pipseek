@@ -15,14 +15,14 @@
 
 ## Why pipseek?
 
-`pip search` was switched off years ago, and scraping `pypi.org/search` no longer works because the page now sits behind a browser challenge.  pipseek takes a different route: it keeps a local full-text index of every project on PyPI (names, summaries, and keywords), searches it in milliseconds, and pulls live details for each result from the PyPI JSON API.  No scraping, no fragile workarounds, and it works offline once the index is cached.
+`pip search` was switched off years ago, and scraping `pypi.org/search` no longer works because the page now sits behind a browser challenge.  pipseek takes a different route: it keeps a local full-text index of every project on PyPI (names, summaries, and keywords), searches it in milliseconds, and pulls live details for each result from the PyPI JSON API.  No scraping, no API keys, no fragile workarounds, and it works offline once the index is cached.
 
 ## Features
 
 - **Interactive TUI** built on [Textual]: live search box, scrollable results, and a detail pane for the highlighted package.
 - **Searches names and descriptions**: `pipseek "progress bar"` finds `tqdm`, `pipseek "web framework"` finds Flask and Django, and `pipseek requests` still puts `requests` first.
 - **Popularity-aware ranking**: name and description relevance, boosted by real 30-day download counts.
-- **Rich package details**: version, release age (color-coded by freshness), downloads, GitHub stars, author, license, Python requirement, homepage, source, docs, extras, and dependencies.
+- **Rich package details**: version, release age (color-coded by freshness), downloads, stars, an OpenSSF security score, author, license, Python requirement, homepage, source, docs, extras, and dependencies.
 - **Knows your environment**: marks packages already installed in your active venv (or `python3` on PATH) and flags available updates.
 - **One-key actions**: copy the install command, open PyPI or the project's repo, or `pip install`/upgrade straight from the results.
 - **"Did you mean?"** suggestions for typos (`reqeusts` → `requests`).
@@ -93,7 +93,7 @@ The first run downloads the search index and builds a local database, which take
 | `-p, --page N` | Page number |
 | `-s, --sort` | `relevance`, `downloads`, `updated`, `name`, or `stars` |
 | `--python PATH` | Interpreter used for installed checks and installs |
-| `--no-github` | Skip GitHub star lookups |
+| `--no-stats` | Skip repository stats (stars, forks, security score) |
 | `--refresh` | Re-download the search index now |
 | `--clear-cache` | Delete all cached data |
 
@@ -101,7 +101,6 @@ The first run downloads the search index and builds a local database, which take
 
 | Variable | Purpose |
 | --- | --- |
-| `GITHUB_TOKEN` / `GH_TOKEN` | Raises the GitHub API rate limit for star counts (60/hour without one) |
 | `PIPSEEK_CACHE_DIR` | Override the cache location |
 | `PIPSEEK_INDEX_URL` | Use a different prebuilt search index |
 | `VIRTUAL_ENV` / `CONDA_PREFIX` | Picked up automatically to decide which environment counts as "installed" |
@@ -119,7 +118,7 @@ PyPI has no public full-text search API, so pipseek maintains its own index:
 | Names, summaries, keywords | pipseek index release, built from the [PyPI Simple API] and [PyPI JSON API] |
 | 30-day download counts | [top-pypi-packages] by Hugo van Kemenade |
 | Live package details | [PyPI JSON API] |
-| Stars, forks, archived status | GitHub REST API |
+| Stars, forks, open issues, OpenSSF Scorecard | [deps.dev] by Google (free, no key, covers GitHub/GitLab/Bitbucket) |
 
 Results are ranked by combining name matches (exact, prefix, and word matches, insensitive to case and `-`/`_`/`.`), BM25 relevance over summaries and keywords, and download popularity.
 
@@ -156,3 +155,4 @@ Created by [OhMyBahGosh](https://github.com/ohmybahgosh).
 [PyPI Simple API]: https://peps.python.org/pep-0691/
 [PyPI JSON API]: https://docs.pypi.org/api/json/
 [top-pypi-packages]: https://github.com/hugovk/top-pypi-packages
+[deps.dev]: https://deps.dev/

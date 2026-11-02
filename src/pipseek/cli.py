@@ -33,7 +33,6 @@ EPILOG = textwrap.dedent(
       o  open on PyPI    h  open homepage/repo    i  pip install (or upgrade)    q  quit
 
     environment:
-      GITHUB_TOKEN / GH_TOKEN   raise the GitHub API rate limit for star counts
       PIPSEEK_CACHE_DIR         override the cache location
     """
 )
@@ -56,7 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--python", metavar="PATH", help="interpreter used for installed checks and installs"
     )
-    p.add_argument("--no-github", action="store_true", help="skip GitHub star lookups")
+    p.add_argument(
+        "--no-stats",
+        "--no-github",
+        dest="no_stats",
+        action="store_true",
+        help="skip repository stats (stars, forks, security score)",
+    )
     p.add_argument("--refresh", action="store_true", help="re-download the package index now")
     p.add_argument("--clear-cache", action="store_true", help="delete cached data and exit")
     p.add_argument("-V", "--version", action="version", version=f"pipseek {__version__}")
@@ -79,7 +84,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     env = PythonEnv(args.python)
-    client = PyPIClient(cache=cache, github=not args.no_github, installed=env.version_of)
+    client = PyPIClient(cache=cache, stats=not args.no_stats, installed=env.version_of)
     query = " ".join(args.query).strip()
     interactive = not (args.plain or args.json or args.info) and sys.stdout.isatty()
 
@@ -120,7 +125,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not page.packages:
         err.print(f"No packages match [bold]{query}[/].")
     else:
-        out.print(results_table(page.packages, show_github=not args.no_github))
+        out.print(results_table(page.packages, show_stars=not args.no_stats))
         footer = (
             f"{page.start}-{page.end} of {page.total:,} matches  |  page {page.page}/{page.pages}"
         )

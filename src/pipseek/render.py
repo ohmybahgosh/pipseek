@@ -48,6 +48,16 @@ def age_style(iso_date: Optional[str]) -> str:
     return "red"
 
 
+def scorecard_style(score: Optional[float]) -> str:
+    if score is None:
+        return "dim"
+    if score >= 7:
+        return "green"
+    if score >= 4:
+        return "yellow"
+    return "red"
+
+
 def status_badges(pkg: PackageInfo) -> Text:
     text = Text()
     if pkg.installed_version:
@@ -56,22 +66,19 @@ def status_badges(pkg: PackageInfo) -> Text:
         else:
             text.append(" installed ", "black on green")
         text.append(" ")
-    if pkg.github_archived:
-        text.append(" archived ", "white on red")
-        text.append(" ")
     if pkg.yanked:
         text.append(" yanked ", "white on red")
     return text
 
 
-def results_table(packages: list[PackageInfo], show_github: bool = True) -> Table:
-    show_github = show_github and any(p.github_stars is not None for p in packages)
+def results_table(packages: list[PackageInfo], show_stars: bool = True) -> Table:
+    show_stars = show_stars and any(p.stars is not None for p in packages)
     table = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False, header_style="bold cyan")
     table.add_column("Package", style="bold", no_wrap=True)
     table.add_column("Version", style="green", no_wrap=True)
     table.add_column("Released", no_wrap=True, justify="right")
     table.add_column("DL/30d", no_wrap=True, justify="right")
-    if show_github:
+    if show_stars:
         table.add_column("Stars", no_wrap=True, justify="right")
     table.add_column("Summary", ratio=1, overflow="ellipsis", no_wrap=True, min_width=20)
 
@@ -85,8 +92,8 @@ def results_table(packages: list[PackageInfo], show_github: bool = True) -> Tabl
             Text(human_age(pkg.released), style=age_style(pkg.released)),
             human_count(pkg.downloads_30d),
         ]
-        if show_github:
-            row.append(human_count(pkg.github_stars))
+        if show_stars:
+            row.append(human_count(pkg.stars))
         row.append(pkg.summary or Text("no description", style="dim italic"))
         table.add_row(*row)
     return table
@@ -117,8 +124,23 @@ def package_panel(pkg: PackageInfo, full: bool = False) -> Panel:
     )
     if pkg.downloads_30d:
         row("Downloads", f"{pkg.downloads_30d:,} in the last 30 days")
-    if pkg.github_stars is not None:
-        row("GitHub", f"{pkg.github_stars:,} stars, {pkg.github_forks or 0:,} forks")
+    if pkg.stars is not None:
+        host = (pkg.source_project or "").split("/", 1)[0]
+        site = {"github.com": "GitHub", "gitlab.com": "GitLab", "bitbucket.org": "Bitbucket"}.get(
+            host, "Repo"
+        )
+        stats = f"{pkg.stars:,} stars, {pkg.forks or 0:,} forks"
+        if pkg.open_issues is not None:
+            stats += f", {pkg.open_issues:,} open issues"
+        row(site, stats)
+    if pkg.scorecard is not None:
+        row(
+            "Security",
+            Text.assemble(
+                (f"{pkg.scorecard:.1f}/10", scorecard_style(pkg.scorecard)),
+                ("  OpenSSF Scorecard", "dim"),
+            ),
+        )
     row("Author", pkg.author)
     row("License", pkg.license)
     row("Python", pkg.requires_python)
