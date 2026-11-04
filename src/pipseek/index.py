@@ -45,6 +45,7 @@ TOP_URL = (
 )
 
 DB_TTL = 7 * 24 * 3600
+FALLBACK_TTL = 24 * 3600  # retry for the full index daily when we only have the fallback
 TOP_TTL = 7 * 24 * 3600
 SCHEMA_VERSION = "1"
 EMPTY_SUMMARY_PENALTY = 150
@@ -119,7 +120,8 @@ class PackageIndex:
             conn = _open_existing(db_path)
             if conn is not None:
                 built = float(_meta(conn, "built_at") or 0)
-                if time.time() - built < DB_TTL:
+                ttl = DB_TTL if _meta(conn, "source") == "full" else FALLBACK_TTL
+                if time.time() - built < ttl:
                     return cls(conn, downloads)
                 conn.close()
 

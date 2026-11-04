@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" width="1200" height="560" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+  <title>How pipseek works: a daily GitHub Action builds a search index from PyPI's official APIs; pipseek downloads it, searches it locally and adds live details.</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1426"/><stop offset="1" stop-color="#0a1020"/></linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#93a3c4"/></marker>
+  </defs>
+  <rect width="1200" height="560" rx="18" fill="url(#bg)"/>
+
+  <!-- column labels -->
+  <text x="40" y="52" fill="#93a3c4" font-size="15" font-weight="700" letter-spacing="2">PUBLIC DATA</text>
+  <text x="440" y="52" fill="#93a3c4" font-size="15" font-weight="700" letter-spacing="2">ONCE A DAY, ON GITHUB</text>
+  <text x="840" y="52" fill="#93a3c4" font-size="15" font-weight="700" letter-spacing="2">ON YOUR MACHINE</text>
+
+  <!-- sources -->
+  <g>
+    <rect x="40" y="76" width="320" height="96" rx="12" fill="#13203a" stroke="#4fa3ff" stroke-opacity=".5"/>
+    <text x="60" y="110" fill="#e9f1ff" font-size="20" font-weight="700">PyPI Simple API</text>
+    <text x="60" y="138" fill="#93a3c4" font-size="15">every project name and its change serial</text>
+    <text x="60" y="158" fill="#93a3c4" font-size="15">(PEP 691 JSON)</text>
+
+    <rect x="40" y="192" width="320" height="96" rx="12" fill="#13203a" stroke="#4fa3ff" stroke-opacity=".5"/>
+    <text x="60" y="226" fill="#e9f1ff" font-size="20" font-weight="700">PyPI JSON API</text>
+    <text x="60" y="254" fill="#93a3c4" font-size="15">summary, keywords, versions,</text>
+    <text x="60" y="274" fill="#93a3c4" font-size="15">dependencies, license</text>
+
+    <rect x="40" y="308" width="320" height="96" rx="12" fill="#13203a" stroke="#ffd43b" stroke-opacity=".5"/>
+    <text x="60" y="342" fill="#e9f1ff" font-size="20" font-weight="700">top-pypi-packages</text>
+    <text x="60" y="370" fill="#93a3c4" font-size="15">30-day download counts for the</text>
+    <text x="60" y="390" fill="#93a3c4" font-size="15">15,000 most popular projects</text>
+
+    <rect x="40" y="424" width="320" height="96" rx="12" fill="#13203a" stroke="#3ddc97" stroke-opacity=".5"/>
+    <text x="60" y="458" fill="#e9f1ff" font-size="20" font-weight="700">deps.dev (Google)</text>
+    <text x="60" y="486" fill="#93a3c4" font-size="15">stars, forks, open issues,</text>
+    <text x="60" y="506" fill="#93a3c4" font-size="15">OpenSSF Scorecard</text>
+  </g>
+
+  <!-- builder -->
+  <rect x="440" y="76" width="320" height="212" rx="12" fill="#13203a" stroke="#e9f1ff" stroke-opacity=".25"/>
+  <text x="460" y="110" fill="#e9f1ff" font-size="20" font-weight="700">Search index workflow</text>
+  <text x="460" y="140" fill="#93a3c4" font-size="15">re-fetches only projects whose</text>
+  <text x="460" y="160" fill="#93a3c4" font-size="15">serial changed since yesterday</text>
+  <text x="460" y="196" fill="#ffd43b" font-family="JetBrains Mono, Consolas, monospace" font-size="15">python -m pipseek.build_index</text>
+  <rect x="460" y="218" width="280" height="50" rx="8" fill="#0b1426" stroke="#4fa3ff" stroke-opacity=".6"/>
+  <text x="476" y="249" fill="#e9f1ff" font-family="JetBrains Mono, Consolas, monospace" font-size="15">pypi-index.tsv.gz  35 MB</text>
+
+  <rect x="440" y="308" width="320" height="96" rx="12" fill="#0f1a30" stroke="#e9f1ff" stroke-opacity=".15" stroke-dasharray="6 6"/>
+  <text x="460" y="342" fill="#e9f1ff" font-size="18" font-weight="700">Offline fallback</text>
+  <text x="460" y="370" fill="#93a3c4" font-size="15">summaries for the top 15,000</text>
+  <text x="460" y="390" fill="#93a3c4" font-size="15">ship inside the package</text>
+
+  <!-- client -->
+  <rect x="840" y="76" width="320" height="212" rx="12" fill="#13203a" stroke="#3ddc97" stroke-opacity=".6"/>
+  <text x="860" y="110" fill="#e9f1ff" font-size="20" font-weight="700">Local SQLite FTS5 index</text>
+  <text x="860" y="140" fill="#93a3c4" font-size="15">built once, refreshed weekly</text>
+  <text x="860" y="176" fill="#e9f1ff" font-size="16" font-weight="600">Ranking blends</text>
+  <text x="860" y="202" fill="#93a3c4" font-size="15">• name match (exact, prefix, words)</text>
+  <text x="860" y="226" fill="#93a3c4" font-size="15">• BM25 over summary + keywords</text>
+  <text x="860" y="250" fill="#93a3c4" font-size="15">• 30-day downloads</text>
+  <text x="860" y="274" fill="#93a3c4" font-size="15">~100 ms per search</text>
+
+  <rect x="840" y="308" width="320" height="212" rx="12" fill="#13203a" stroke="#ffd43b" stroke-opacity=".6"/>
+  <text x="860" y="342" fill="#e9f1ff" font-size="20" font-weight="700">pipseek</text>
+  <text x="860" y="370" fill="#93a3c4" font-size="15">TUI, --plain, --json, --info</text>
+  <text x="860" y="406" fill="#93a3c4" font-size="15">live PyPI details for the page</text>
+  <text x="860" y="426" fill="#93a3c4" font-size="15">you see, cached for an hour</text>
+  <text x="860" y="462" fill="#93a3c4" font-size="15">installed / update badges from</text>
+  <text x="860" y="482" fill="#93a3c4" font-size="15">your active environment</text>
+
+  <!-- arrows -->
+  <path d="M360 124 C 400 124, 400 150, 438 150" stroke="#93a3c4" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <path d="M360 240 C 400 240, 400 200, 438 200" stroke="#93a3c4" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <path d="M760 243 L 838 180" stroke="#4fa3ff" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+  <path d="M760 356 L 838 230" stroke="#93a3c4" stroke-width="2" stroke-dasharray="5 5" fill="none" marker-end="url(#arr)"/>
+  <path d="M1000 288 L 1000 306" stroke="#93a3c4" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <path d="M360 380 C 385 380, 385 414, 410 414 L 800 414 C 820 414, 820 396, 838 396" stroke="#ffd43b" stroke-width="2" stroke-opacity=".8" fill="none" marker-end="url(#arr)"/>
+  <text x="560" y="434" fill="#ffd43b" font-size="13" font-weight="600">ranking boost</text>
+  <path d="M360 472 L 838 472" stroke="#3ddc97" stroke-width="2" stroke-opacity=".8" fill="none" marker-end="url(#arr)"/>
+  <text x="560" y="464" fill="#3ddc97" font-size="13" font-weight="600">live, per result, no key</text>
+</svg>
