@@ -6,6 +6,7 @@
 
 **Search all of PyPI from your terminal, by name and description, and check your own environment for outdated and vulnerable packages.  The `pip search` that PyPI switched off, rebuilt with a full-text index, an interactive TUI and no API keys.**
 
+[![PyPI](https://img.shields.io/pypi/v/pipseek?color=4fa3ff)](https://pypi.org/project/pipseek/)
 [![CI](https://github.com/ohmybahgosh/pipseek/actions/workflows/ci.yml/badge.svg)](https://github.com/ohmybahgosh/pipseek/actions/workflows/ci.yml)
 [![Search index](https://github.com/ohmybahgosh/pipseek/actions/workflows/index.yml/badge.svg)](https://github.com/ohmybahgosh/pipseek/releases/tag/index)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-4fa3ff)](https://github.com/ohmybahgosh/pipseek/blob/main/pyproject.toml)
@@ -19,7 +20,7 @@
 `pip search` stopped working years ago, and scraping `pypi.org/search` doesn't work either, because that page now sits behind a browser challenge.  pipseek keeps its own full-text index of all ~930,000 projects on PyPI, searches it locally in about 100 ms, and pulls live details for the results you're looking at.  It uses only public APIs: no scraping, no accounts, no keys.
 
 ```bash
-pipx install git+https://github.com/ohmybahgosh/pipseek
+pipx install pipseek
 pipseek "web framework"
 ```
 
@@ -96,16 +97,18 @@ pipseek "web framework"
 [pipx](https://pipx.pypa.io/) or [uv](https://docs.astral.sh/uv/) keep pipseek in its own isolated environment, which is the cleanest way:
 
 ```bash
-pipx install git+https://github.com/ohmybahgosh/pipseek
+pipx install pipseek
 # or
-uv tool install git+https://github.com/ohmybahgosh/pipseek
+uv tool install pipseek
 ```
 
 Plain pip works too:
 
 ```bash
-pip install git+https://github.com/ohmybahgosh/pipseek
+pip install pipseek
 ```
+
+To run the latest code from GitHub instead of the PyPI release, use `pipx install git+https://github.com/ohmybahgosh/pipseek`.
 
 Upgrade later with `pipx upgrade pipseek` or `uv tool upgrade pipseek`.
 
