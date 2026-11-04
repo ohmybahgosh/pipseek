@@ -11,6 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 from pipseek.pypi import PackageInfo, days_since
+from pipseek.vulns import max_severity, min_fix
 
 
 def human_count(n: Optional[int]) -> str:
@@ -58,9 +59,56 @@ def scorecard_style(score: Optional[float]) -> str:
     return "red"
 
 
+SEVERITY_STYLE = {
+    "CRITICAL": "bold white on red",
+    "HIGH": "bold red",
+    "MODERATE": "yellow",
+    "MEDIUM": "yellow",
+    "LOW": "cyan",
+}
+
+
+def vuln_label(vulns: Optional[list]) -> Optional[Text]:
+    """Short '2 vulns (HIGH)' text, or None when unknown/none."""
+    if not vulns:
+        return None
+    worst = max_severity(vulns)
+    word = "vuln" if len(vulns) == 1 else "vulns"
+    text = Text(f"{len(vulns)} {word}", style="bold red")
+    if worst:
+        text.append(f" ({worst.lower()})", style="red")
+    return text
+
+
+def vulns_text(vulns: list, limit: int = 5) -> Table:
+    """A compact list: severity, CVE (or advisory id), fix version, and the summary under it."""
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(no_wrap=True)
+    grid.add_column()
+    for v in vulns[:limit]:
+        line = Text(v.cve or v.id, style="bold")
+        if v.fixed:
+            line.append(f"  fixed in {v.fixed}", style="green")
+        if v.summary:
+            line.append("\n" + v.summary, style="dim")
+        sev = (v.severity or "unknown").lower()
+        grid.add_row(Text(sev, style=SEVERITY_STYLE.get(v.severity or "", "dim")), line)
+    if len(vulns) > limit:
+        grid.add_row("", Text(f"...and {len(vulns) - limit} more", style="dim"))
+    return grid
+
+
 def status_badges(pkg: PackageInfo) -> Text:
     text = Text()
-    if pkg.installed_version:
+    if pkg.installed_vulns:
+        n = len(pkg.installed_vulns)
+        fix = min_fix(pkg.installed_vulns)
+        word = "vulnerability" if n == 1 else "vulnerabilities"
+        msg = f" {n} known {word} in your installed {pkg.installed_version}"
+        msg += f", fixed in {fix} " if fix else " "
+        text.append(msg, "bold white on red")
+        text.append(" ")
+    elif pkg.installed_version:
         if pkg.update_available:
             text.append(f" installed {pkg.installed_version}, update available ", "black on yellow")
         else:
@@ -86,6 +134,8 @@ def results_table(packages: list[PackageInfo], show_stars: bool = True) -> Table
         name = Text(pkg.name)
         if pkg.installed_version:
             name.append(" *", style="yellow" if pkg.update_available else "green")
+        if pkg.vulns or pkg.installed_vulns:
+            name.append(" !", style="bold red")
         row = [
             name,
             pkg.version,
@@ -133,6 +183,15 @@ def package_panel(pkg: PackageInfo, full: bool = False) -> Panel:
         if pkg.open_issues is not None:
             stats += f", {pkg.open_issues:,} open issues"
         row(site, stats)
+    if pkg.vulns is not None:
+        latest = f"in {pkg.version} (latest), from OSV.dev"
+        if pkg.vulns:
+            row(f"Vulns ({len(pkg.vulns)})", vulns_text(pkg.vulns))
+        else:
+            row("Vulns", Text.assemble(("none known", "green"), (f"  {latest}", "dim")))
+    if pkg.installed_vulns and pkg.installed_version != pkg.version:
+        label = f"In {pkg.installed_version} ({len(pkg.installed_vulns)})"
+        row(label, vulns_text(pkg.installed_vulns, limit=3))
     if pkg.scorecard is not None:
         row(
             "Security",

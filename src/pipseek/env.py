@@ -51,10 +51,36 @@ def find_python(explicit: Optional[str] = None) -> str:
     return sys.executable
 
 
+_MANAGED_SCRIPT = (
+    "import os, sys, sysconfig\n"
+    "venv = sys.prefix != getattr(sys, 'base_prefix', sys.prefix)\n"
+    "marker = os.path.join(sysconfig.get_paths()['stdlib'], 'EXTERNALLY-MANAGED')\n"
+    "print(int(not venv and os.path.exists(marker)))\n"
+)
+
+
 class PythonEnv:
     def __init__(self, python: Optional[str] = None) -> None:
         self.python = find_python(python)
         self._installed: Optional[dict[str, str]] = None
+        self._managed: Optional[bool] = None
+
+    @property
+    def externally_managed(self) -> bool:
+        """True for an OS-managed Python (PEP 668), where pip shouldn't install packages."""
+        if self._managed is None:
+            try:
+                out = subprocess.run(
+                    [self.python, "-c", _MANAGED_SCRIPT],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=True,
+                ).stdout.strip()
+                self._managed = out == "1"
+            except (OSError, subprocess.SubprocessError):
+                self._managed = False
+        return self._managed
 
     @property
     def installed(self) -> dict[str, str]:

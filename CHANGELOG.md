@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.1.0 (2026-11)
+
+### Security
+
+- Known vulnerabilities from OSV.dev (free, no key) for the latest version and for the version you have installed: severity, CVE and the version that fixes each one.  Duplicate advisories (GHSA, PYSEC and CVE ids for the same problem) are merged.
+- A red badge in the detail pane and a flag in the results when your installed version is affected.
+- `pipseek --outdated` checks your whole environment for outdated and vulnerable packages, worst first, and ends with the upgrade command (vulnerable packages first when the list is long).  `--all` lists every package, `--json` gives structured output, and `--strict` exits with status 1 when something installed is vulnerable, for CI.
+- On an OS-managed ("externally managed") system Python, pipseek no longer suggests `pip install` commands or installs with the `i` key.
+
+### Other
+
+- Fix versions prefer final releases over release candidates.
+- Releases are published to PyPI from GitHub Actions with Trusted Publishing, so no API token is stored anywhere.
+- The README now uses absolute image links, so it renders on PyPI too.
+
 ## 2.0.0 (2026-11)
 
 A ground-up rewrite.  Written with AI coding agents (Claude), directed, reviewed and tested by [OhMyBahGosh](https://github.com/ohmybahgosh).

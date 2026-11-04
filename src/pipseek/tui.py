@@ -17,7 +17,7 @@ from pipseek import __version__
 from pipseek.env import PythonEnv
 from pipseek.index import IndexUnavailable
 from pipseek.pypi import PackageInfo
-from pipseek.render import age_style, human_age, human_count, package_panel
+from pipseek.render import age_style, human_age, human_count, package_panel, vuln_label
 from pipseek.search import SORTS, Searcher, SearchPage
 
 
@@ -39,6 +39,10 @@ class ResultItem(ListItem):
             meta.append(f"  {human_count(pkg.downloads_30d)} dl/30d", style="cyan")
         if pkg.stars is not None:
             meta.append(f"  {human_count(pkg.stars)} stars", style="magenta")
+        label = vuln_label(pkg.installed_vulns or pkg.vulns)
+        if label:
+            meta.append("  ")
+            meta.append(label)
         summary = Text(pkg.summary or "no description", style="dim", overflow="ellipsis")
         summary.truncate(200)
         yield Label(line)
@@ -246,6 +250,14 @@ class PipSeekApp(App):
     def action_install(self) -> None:
         pkg = self.selected
         if not pkg or not self.env:
+            return
+        if self.env.externally_managed:
+            self.notify(
+                f"{self.env.python} is managed by your OS, so pip can't install into it. "
+                "Activate a virtualenv or start pipseek with --python.",
+                severity="warning",
+                timeout=8,
+            )
             return
         upgrade = pkg.update_available
         cmd = " ".join(self.env.install_command(pkg.name, upgrade))

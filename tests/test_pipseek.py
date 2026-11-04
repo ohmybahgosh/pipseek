@@ -220,3 +220,134 @@ def test_package_panel_renders_stats():
     console.print(package_panel(pkg, full=True))
     text = console.export_text()
     assert "GitLab" in text and "1,200 stars" in text and "7.5/10" in text
+
+
+# Vulnerabilities and --outdated ------------------------------------------------------------
+
+OSV_RECORDS = [
+    {
+        "id": "PYSEC-2024-1",
+        "aliases": ["GHSA-aaaa-bbbb-cccc", "CVE-2024-0001"],
+        "details": "Same bug, PyPA copy",
+        "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "2.32.0"}]}]}],
+    },
+    {
+        "id": "GHSA-aaaa-bbbb-cccc",
+        "aliases": ["CVE-2024-0001", "PYSEC-2024-1"],
+        "summary": "Session ignores verify=False",
+        "database_specific": {"severity": "MODERATE"},
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "requests"},
+                "ranges": [{"events": [{"introduced": "0"}, {"fixed": "2.32.0"}]}],
+            }
+        ],
+    },
+    {
+        "id": "GHSA-dddd-eeee-ffff",
+        "aliases": ["CVE-2024-0002"],
+        "summary": "Credential leak",
+        "database_specific": {"severity": "HIGH"},
+        "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "2.32.4"}]}]}],
+    },
+]
+
+
+def test_osv_records_merge_aliases_and_sort_by_severity():
+    from pipseek.vulns import max_severity, min_fix, parse_records
+
+    vulns = parse_records(OSV_RECORDS, "2.25.0")
+    assert [v.id for v in vulns] == ["GHSA-dddd-eeee-ffff", "GHSA-aaaa-bbbb-cccc"]
+    assert vulns[0].cve == "CVE-2024-0002"
+    assert vulns[1].severity == "MODERATE"
+    assert vulns[1].fixed == "2.32.0"
+    assert max_severity(vulns) == "HIGH"
+    assert min_fix(vulns) == "2.32.4"  # the version that fixes both
+
+
+def test_fixed_version_ignores_fixes_below_current():
+    from pipseek.vulns import parse_records
+
+    rec = {
+        "id": "GHSA-x",
+        "affected": [
+            {"ranges": [{"events": [{"introduced": "0"}, {"fixed": "1.0"}]}]},
+            {"ranges": [{"events": [{"introduced": "2.0"}, {"fixed": "2.5"}]}]},
+        ],
+    }
+    assert parse_records([rec], "2.1")[0].fixed == "2.5"
+
+
+def test_panel_shows_installed_vulnerabilities():
+    from rich.console import Console
+
+    from pipseek.render import package_panel
+    from pipseek.vulns import parse_records
+
+    pkg = PackageInfo(name="requests", version="2.32.5", installed_version="2.25.0")
+    pkg.vulns = []
+    pkg.installed_vulns = parse_records(OSV_RECORDS, "2.25.0")
+    console = Console(record=True, width=120)
+    console.print(package_panel(pkg, full=True))
+    text = console.export_text()
+    assert "2 known vulnerabilities in your installed 2.25.0, fixed in 2.32.4" in text
+    assert "none known" in text and "CVE-2024-0002" in text
+
+
+class _FakeEnv:
+    python = "/usr/bin/python3"
+    installed = {"requests": "2.25.0", "rich": "15.0.0", "mylocal": "0.1"}
+
+    def version_of(self, name):
+        return self.installed.get(normalize(name))
+
+
+class _FakePyPI:
+    latest = {"requests": "2.32.5", "rich": "15.0.0"}
+
+    def package(self, name, downloads=None):
+        if name not in self.latest:
+            return None
+        return PackageInfo(name=name, version=self.latest[name])
+
+    def add_vulns(self, pkg):
+        from pipseek.vulns import parse_records
+
+        bad = pkg.name == "requests"
+        pkg.installed_vulns = parse_records(OSV_RECORDS, pkg.installed_version) if bad else []
+
+
+def test_check_environment_lists_outdated_and_vulnerable():
+    from pipseek.outdated import check_environment, outdated_dict, upgrade_command
+
+    env, client = _FakeEnv(), _FakePyPI()
+    rows = check_environment(env, client)
+    assert [p.name for p in rows] == ["requests"]
+    assert outdated_dict(rows[0])["fixed_in"] == "2.32.4"
+    assert upgrade_command(env, rows) == "/usr/bin/python3 -m pip install --upgrade requests"
+    assert [p.name for p in check_environment(env, client, include_all=True)] == [
+        "requests",
+        "rich",
+    ]
+
+
+def test_fixed_version_prefers_final_releases():
+    from pipseek.vulns import parse_records
+
+    rec = {
+        "id": "GHSA-y",
+        "affected": [
+            {"ranges": [{"events": [{"introduced": "0"}, {"fixed": "26.10.0rc1"}]}]},
+            {"ranges": [{"events": [{"introduced": "0"}, {"fixed": "26.10.0"}]}]},
+        ],
+    }
+    assert parse_records([rec], "24.11.0")[0].fixed == "26.10.0"
+
+
+def test_upgrade_command_prioritises_vulnerable_packages():
+    from pipseek.outdated import upgrade_command
+
+    pkgs = [PackageInfo(name=f"p{i}", version="2", installed_version="1") for i in range(20)]
+    pkgs[5].installed_vulns = [object()]
+    assert upgrade_command(_FakeEnv(), pkgs).endswith("--upgrade p5")
+    assert len(upgrade_command(_FakeEnv(), pkgs[:3]).split()) == 8

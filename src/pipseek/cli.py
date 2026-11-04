@@ -26,6 +26,8 @@ EPILOG = textwrap.dedent(
       pipseek "pdf parser" -P       print a table instead of opening the TUI
       pipseek http -s downloads -n 10 --json | jq '.[].name'
       pipseek --info requests       full details for one package
+      pipseek --outdated            what's out of date or vulnerable in your environment
+      pipseek --outdated --strict   same, but exit 1 if anything installed is vulnerable (CI)
 
     interactive keys:
       /  search    enter  run search    up/down or j/k  move
@@ -47,6 +49,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("query", nargs="*", help="search terms")
     p.add_argument("-i", "--info", metavar="PACKAGE", help="show full details for one package")
+    p.add_argument(
+        "-o",
+        "--outdated",
+        action="store_true",
+        help="list installed packages that are out of date or have known vulnerabilities",
+    )
+    p.add_argument(
+        "--all", action="store_true", help="with --outdated: list every installed package"
+    )
+    p.add_argument(
+        "--strict",
+        action="store_true",
+        help="with --outdated: exit 1 if an installed version has a known vulnerability",
+    )
     p.add_argument("-P", "--plain", action="store_true", help="print results, no interactive UI")
     p.add_argument("-j", "--json", action="store_true", help="print results as JSON")
     p.add_argument("-n", "--limit", type=int, default=20, metavar="N", help="results per page")
@@ -60,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-github",
         dest="no_stats",
         action="store_true",
-        help="skip repository stats (stars, forks, security score)",
+        help="skip repository stats and vulnerability checks",
     )
     p.add_argument("--refresh", action="store_true", help="re-download the package index now")
     p.add_argument("--clear-cache", action="store_true", help="delete cached data and exit")
@@ -86,7 +102,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     env = PythonEnv(args.python)
     client = PyPIClient(cache=cache, stats=not args.no_stats, installed=env.version_of)
     query = " ".join(args.query).strip()
-    interactive = not (args.plain or args.json or args.info) and sys.stdout.isatty()
+    interactive = (
+        not (args.plain or args.json or args.info or args.outdated) and sys.stdout.isatty()
+    )
 
     def make_searcher(progress=None) -> Searcher:
         index = PackageIndex.load(
@@ -97,6 +115,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         if args.info:
             return _info(args, client, cache, out, err)
+
+        if args.outdated:
+            return _outdated(args, env, cache, out, err)
 
         if interactive:
             from pipseek.tui import PipSeekApp
@@ -135,6 +156,48 @@ def main(argv: Optional[list[str]] = None) -> int:
     if page.suggestions:
         err.print(f"[yellow]Did you mean:[/] {', '.join(page.suggestions)}")
     return 0
+
+
+def _outdated(args, env: PythonEnv, cache: Cache, out: Console, err: Console) -> int:
+    from pipseek.outdated import check_environment, outdated_dict, outdated_table, upgrade_command
+
+    client = PyPIClient(cache=cache, stats=False, installed=env.version_of)
+    if not env.installed:
+        err.print(f"[red]Could not list the packages installed for {env.python}.[/]")
+        return 1
+    with err.status("Checking installed packages...") as status:
+        packages = check_environment(
+            env, client, include_all=args.all, progress=lambda m: status.update(m)
+        )
+    vulnerable = [p for p in packages if p.installed_vulns]
+    if args.json:
+        print(json.dumps([outdated_dict(p) for p in packages], indent=2))
+    else:
+        err.print(f"[dim]Environment: {env.python}[/]")
+        if not packages:
+            err.print(
+                f"[green]All {len(env.installed)} installed packages are up to date, "
+                "with no known vulnerabilities.[/]"
+            )
+        else:
+            out.print(outdated_table(packages))
+            outdated = sum(1 for p in packages if p.update_available)
+            err.print(
+                f"[dim]{outdated} outdated, {len(vulnerable)} with known vulnerabilities, "
+                f"out of {len(env.installed)} installed.  Vulnerability data: OSV.dev[/]"
+            )
+            if env.externally_managed:
+                err.print(
+                    "[yellow]This is a system Python managed by your OS, so pip shouldn't "
+                    "upgrade it directly.[/]  Update these through your package manager, "
+                    "or install what you need in a virtualenv or with pipx."
+                )
+            else:
+                cmd = upgrade_command(env, packages)
+                if cmd:
+                    label = "Upgrade" if outdated <= 12 else "Start with"
+                    err.print(f"[bold]{label}:[/] {cmd}")
+    return 1 if args.strict and vulnerable else 0
 
 
 def _info(args, client: PyPIClient, cache: Cache, out: Console, err: Console) -> int:

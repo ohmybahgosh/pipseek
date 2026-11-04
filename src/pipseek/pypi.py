@@ -1,4 +1,4 @@
-"""PyPI JSON API client and project stats from deps.dev."""
+"""PyPI JSON API client, project stats from deps.dev, and vulnerabilities from OSV."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from packaging.version import InvalidVersion, Version
 
 from pipseek import __version__
 from pipseek.cache import Cache
+from pipseek.vulns import OSVClient, Vuln
 
 USER_AGENT = f"pipseek/{__version__} (+https://github.com/ohmybahgosh/pipseek)"
 DETAILS_TTL = 3600
@@ -56,6 +57,8 @@ class PackageInfo:
     forks: Optional[int] = None
     open_issues: Optional[int] = None
     scorecard: Optional[float] = None  # OpenSSF Scorecard, 0-10
+    vulns: Optional[list[Vuln]] = None  # known vulnerabilities in the latest version
+    installed_vulns: Optional[list[Vuln]] = None  # ...and in the installed version
     installed_version: Optional[str] = None
 
     @property
@@ -175,6 +178,7 @@ class PyPIClient:
         self.session = session or requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
         self.stats = stats
+        self.osv = OSVClient(self.session, self.cache, timeout)
         self.installed = installed
         self.timeout = timeout
         self.max_workers = max_workers
@@ -203,6 +207,7 @@ class PyPIClient:
             pkg.installed_version = self.installed(pkg.name)
         if self.stats:
             self._add_project_stats(pkg)
+            self.add_vulns(pkg)
         return pkg
 
     def packages(
@@ -215,6 +220,16 @@ class PyPIClient:
         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(names))) as pool:
             results = pool.map(lambda n: self.package(n, downloads.get(n)), names)
             return [r for r in results if r is not None]
+
+    def add_vulns(self, pkg: PackageInfo) -> None:
+        """Known vulnerabilities (OSV.dev) for the latest and the installed version."""
+        if pkg.version and pkg.version != "?":
+            pkg.vulns = self.osv.query(pkg.name, pkg.version)
+        if pkg.installed_version:
+            if pkg.installed_version == pkg.version:
+                pkg.installed_vulns = pkg.vulns
+            else:
+                pkg.installed_vulns = self.osv.query(pkg.name, pkg.installed_version)
 
     def _add_project_stats(self, pkg: PackageInfo) -> None:
         """Stars, forks, issues and OpenSSF Scorecard from deps.dev (Google; free, no key)."""

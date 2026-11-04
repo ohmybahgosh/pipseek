@@ -29,9 +29,9 @@
     <text x="60" y="390" fill="#93a3c4" font-size="15">15,000 most popular projects</text>
 
     <rect x="40" y="424" width="320" height="96" rx="12" fill="#13203a" stroke="#3ddc97" stroke-opacity=".5"/>
-    <text x="60" y="458" fill="#e9f1ff" font-size="20" font-weight="700">deps.dev (Google)</text>
-    <text x="60" y="486" fill="#93a3c4" font-size="15">stars, forks, open issues,</text>
-    <text x="60" y="506" fill="#93a3c4" font-size="15">OpenSSF Scorecard</text>
+    <text x="60" y="458" fill="#e9f1ff" font-size="20" font-weight="700">deps.dev + OSV.dev</text>
+    <text x="60" y="486" fill="#93a3c4" font-size="15">stars, forks, OpenSSF Scorecard,</text>
+    <text x="60" y="506" fill="#93a3c4" font-size="15">known vulnerabilities</text>
   </g>
 
   <!-- builder -->
