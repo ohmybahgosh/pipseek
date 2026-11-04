@@ -554,3 +554,86 @@ def test_index_check_before_publishing(tmp_path):
     assert "summary" in check_index(str(bad), min_records=10)[0]
     assert main(["--check", str(good)]) == 1  # fewer than the real 100,000 minimum
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+class _HttpIndex:
+    """Serves an index over fake HTTP: a few 404s first, and checksums that change over time."""
+
+    headers: dict = {}
+
+    def __init__(self, data: bytes, missing: int = 0, checksums=()):
+        self.data, self.missing, self.checksums = data, missing, list(checksums)
+        self.index_calls = 0
+
+    def get(self, url, **kw):
+
+        if url.endswith(".sha256"):
+            if not self.checksums:
+                return _Text(404, "")
+            value = self.checksums.pop(0) if len(self.checksums) > 1 else self.checksums[0]
+            return _Text(200, f"{value}  pypi-index.tsv.gz\n")
+        if url == index_mod.SIMPLE_URL:
+            return _Resp(200, {"projects": [{"name": "fallback-only"}]})
+        if url == index_mod.TOP_URL:
+            raise requests.ConnectionError("no download stats in this test")
+        self.index_calls += 1
+        if self.index_calls <= self.missing:
+            return _Stream(404, b"")
+        return _Stream(200, self.data)
+
+
+class _Text:
+    def __init__(self, status, text):
+        self.status_code, self.text = status, text
+
+
+class _Stream:
+    def __init__(self, status, data):
+        import io
+
+        self.status_code = status
+        self.headers = {"Content-Length": str(len(data))}
+        self.raw = io.BytesIO(data)
+
+    def close(self):
+        pass
+
+
+def _http_load(tmp_path, session):
+    cache = Cache(tmp_path / "cache")
+    return PackageIndex.load(session=session, cache=cache, refresh=True)
+
+
+@pytest.fixture
+def http_index(tmp_path, monkeypatch, small_index):
+    monkeypatch.setattr(index_mod, "INDEX_RETRY_DELAY", 0)
+    monkeypatch.delenv("PIPSEEK_INDEX_URL", raising=False)
+    src = tmp_path / "idx.tsv.gz"
+    _write_index(src, 50)
+    data = src.read_bytes()
+    return data, hashlib.sha256(data).hexdigest()
+
+
+def test_index_download_retries_while_the_asset_is_swapped(tmp_path, http_index):
+    data, digest = http_index
+    session = _HttpIndex(data, missing=2, checksums=[digest])
+    assert _http_load(tmp_path, session).source == "full"
+    assert session.index_calls == 3
+
+
+def test_index_download_gives_up_after_retries(tmp_path, http_index):
+    data, digest = http_index
+    session = _HttpIndex(data, missing=5, checksums=[digest])
+    assert _http_load(tmp_path, session).source == "names"
+
+
+def test_checksum_is_read_again_when_it_was_published_late(tmp_path, http_index):
+    data, digest = http_index
+    session = _HttpIndex(data, checksums=["0" * 64, digest])  # old checksum, then the new one
+    assert _http_load(tmp_path, session).source == "full"
+
+
+def test_wrong_checksum_is_still_rejected(tmp_path, http_index):
+    data, _ = http_index
+    session = _HttpIndex(data, checksums=["0" * 64])
+    assert _http_load(tmp_path, session).source == "names"

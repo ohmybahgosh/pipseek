@@ -57,6 +57,8 @@ TOP_TIMEOUT = 15
 MAX_INDEX_DOWNLOAD = 200 * 1024 * 1024  # the compressed index is about 35 MB today
 MAX_INDEX_TEXT = 1024 * 1024 * 1024  # ...and about 150 MB uncompressed
 MIN_INDEX_RECORDS = 100_000
+INDEX_ATTEMPTS = 3
+INDEX_RETRY_DELAY = 2.0
 MIN_SUMMARY_SHARE = 0.5  # a healthy index has summaries for about 90% of projects
 SCHEMA_VERSION = "1"
 EMPTY_SUMMARY_PENALTY = 150
@@ -460,35 +462,51 @@ class _Meter(io.RawIOBase):
         return n
 
 
+def _fetch_checksum(session: requests.Session, url: str, timeout: float) -> Optional[str]:
+    try:
+        resp = session.get(url + ".sha256", timeout=timeout)
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200 or not resp.text.strip():
+        return None
+    return resp.text.split()[0].lower()
+
+
 def _open_index(
     session: requests.Session, timeout: float
-) -> Optional[tuple[BinaryIO, Optional[str], Callable[[], None]]]:
-    """(binary stream, expected sha256 or None, close function), or None if unavailable."""
+) -> Optional[tuple[BinaryIO, Optional[str], Callable[[], None], Callable[[], Optional[str]]]]:
+    """(binary stream, expected sha256 or None, close, re-read the checksum), or None."""
     url = index_url()
     if url.startswith(("http://", "https://")):
-        expected = None
-        try:
-            resp = session.get(url + ".sha256", timeout=timeout)
+        expected = _fetch_checksum(session, url, timeout)
+        # The daily job swaps the file in by deleting the old asset and renaming the new one,
+        # which leaves a moment with no file.  A short retry rides over that.
+        for attempt in range(INDEX_ATTEMPTS):
+            resp = session.get(url, timeout=timeout, stream=True)
             if resp.status_code == 200:
-                expected = resp.text.split()[0].lower() if resp.text.strip() else None
-        except requests.RequestException:
-            pass
-        resp = session.get(url, timeout=timeout, stream=True)
-        if resp.status_code != 200:
+                break
             resp.close()
+            if resp.status_code != 404 and resp.status_code < 500:
+                return None
+            if attempt + 1 < INDEX_ATTEMPTS:
+                time.sleep(INDEX_RETRY_DELAY)
+        else:
             return None
         if int(resp.headers.get("Content-Length") or 0) > MAX_INDEX_DOWNLOAD:
             resp.close()
             return None
         resp.raw.decode_content = True
-        return resp.raw, expected, resp.close
+        return resp.raw, expected, resp.close, lambda: _fetch_checksum(session, url, timeout)
     # A local file, as a path or a file:// URL.
     path = url2pathname(urlparse(url).path) if url.startswith("file:") else url
-    expected = None
-    with contextlib.suppress(OSError, IndexError):
-        expected = Path(path + ".sha256").read_text().split()[0].lower()
+
+    def local_checksum() -> Optional[str]:
+        with contextlib.suppress(OSError, IndexError):
+            return Path(path + ".sha256").read_text().split()[0].lower()
+        return None
+
     fh = open(path, "rb")  # noqa: SIM115 - closed by the caller
-    return fh, expected, fh.close
+    return fh, local_checksum(), fh.close, local_checksum
 
 
 def _build_full(
@@ -508,7 +526,7 @@ def _build_full(
         return False
     if opened is None:
         return False
-    raw, expected, close = opened
+    raw, expected, close, recheck = opened
     digest = hashlib.sha256() if expected else None
     compressed = _Meter(raw, MAX_INDEX_DOWNLOAD, digest)
     bundled = {normalize(n): (s, k) for n, s, k in bundled_records()}
@@ -552,6 +570,10 @@ def _build_full(
         conn.close()
         close()
 
+    if digest is not None and digest.hexdigest() != expected:
+        # The index and its checksum are published one after the other, so a download that
+        # lands between the two sees a mismatch.  Read the checksum again before giving up.
+        expected = recheck()
     if digest is not None and digest.hexdigest() != expected:
         if progress:
             progress("The downloaded index didn't match its checksum; using the fallback.")

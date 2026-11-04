@@ -1,0 +1,43 @@
+name: Index watchdog
+
+# Runs weekly, separately from the index build, so it keeps working even when the build
+# fails.  It does two things:
+#   1. Re-enables the scheduled workflows.  GitHub turns off schedules after 60 days without
+#      repository activity, and this resets that clock for both workflows.
+#   2. Fails (which emails the repo owner) when the published index is more than 3 days old,
+#      so a broken or switched-off index job gets noticed.
+
+on:
+  schedule:
+    - cron: "41 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Keep the schedules enabled
+        run: |
+          gh api -X PUT "repos/$REPO/actions/workflows/index.yml/enable"
+          gh api -X PUT "repos/$REPO/actions/workflows/keepalive.yml/enable"
+
+      - name: Check the index is fresh
+        run: |
+          set -euo pipefail
+          updated=$(gh api "repos/$REPO/releases/tags/index" \
+            --jq '.assets[] | select(.name == "pypi-index.tsv.gz") | .updated_at')
+          if [ -z "$updated" ]; then
+            echo "The index release has no pypi-index.tsv.gz asset."; exit 1
+          fi
+          age_days=$(( ( $(date +%s) - $(date -d "$updated" +%s) ) / 86400 ))
+          echo "pypi-index.tsv.gz was last published $updated ($age_days days ago)."
+          if [ "$age_days" -gt 3 ]; then
+            echo "The search index is stale.  Check the Search index workflow runs."; exit 1
+          fi

@@ -76,7 +76,8 @@ jobs:
             gh api --paginate "repos/$REPO/releases/$RID/assets" --jq ".[] | select(.name == \"$1\") | .id"
           }
           # Upload under a temporary name, then swap names, so clients never see a missing
-          # file for the length of an upload (as --clobber would cause).
+          # file for the length of an upload (as --clobber would cause).  The swap itself
+          # leaves about a second with no file; pipseek 2.2.1 and later retry over it.
           publish() {
             local name=$1
             local stale; stale=$(asset_id "$name.new")
@@ -93,5 +94,7 @@ jobs:
 
       - name: Keep the schedule alive
         # GitHub turns off scheduled workflows after 60 days without repository activity.
-        # Re-enabling this workflow on every run resets that clock.
+        # Re-enabling this workflow on every run resets that clock.  keepalive.yml does the
+        # same weekly, so the schedule survives even if this job keeps failing.
+        if: always()
         run: gh api -X PUT "repos/$REPO/actions/workflows/index.yml/enable"

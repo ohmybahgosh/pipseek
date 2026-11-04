@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.2.1 (2026-11)
+
+### Fixes
+
+- The index download retries for a few seconds when the file is briefly missing.  The daily job swaps in a new index by deleting the old file and renaming the new one, which leaves about a second with no file.
+- The index and its checksum are published one after the other.  When a download lands between the two, pipseek reads the checksum again instead of rejecting a good index.
+
+### Project
+
+- A new weekly "Index watchdog" workflow keeps the scheduled jobs from being switched off after 60 quiet days, even when the index build is failing, and fails (which emails the owner) when the published index is more than 3 days old.
+
 ## 2.2.0 (2026-11)
 
 Fixes from a full review of 2.1.0.  Some command-line behavior changed, so this is 2.2.0 instead of 2.1.1: `--strict` has a new exit code, and flags that used to be ignored now stop with an error.
