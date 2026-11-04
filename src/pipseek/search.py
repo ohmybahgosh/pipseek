@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from pipseek.index import Match, PackageIndex, normalize
-from pipseek.pypi import PackageInfo, PyPIClient
+from pipseek.pypi import PackageInfo, PyPIClient, offline_package
 
 SORTS = ("relevance", "downloads", "updated", "name", "stars")
 
@@ -65,7 +65,15 @@ class Searcher:
         page = max(1, page)
         chunk = matches[(page - 1) * per_page : page * per_page]
         names = [m.name for m in chunk]
-        packages = self.client.packages(names, {m.name: m.downloads for m in chunk})
+        by_name = {m.name: m for m in chunk}
+
+        def from_index(name: str) -> PackageInfo:
+            m = by_name[name]
+            return offline_package(m.name, m.summary, m.downloads)
+
+        packages = self.client.packages(
+            names, {m.name: m.downloads for m in chunk}, fallback=from_index
+        )
 
         # Sorts that need PyPI/GitHub data apply within the fetched page.
         if sort == "updated":

@@ -34,7 +34,7 @@ class FakeClient:
     def package(self, name, downloads=None):
         return PackageInfo(name=name, version="1.0", downloads_30d=downloads)
 
-    def packages(self, names, downloads=None):
+    def packages(self, names, downloads=None, fallback=None):
         downloads = downloads or {}
         return [self.package(n, downloads.get(n)) for n in names]
 
@@ -305,7 +305,7 @@ class _FakeEnv:
 class _FakePyPI:
     latest = {"requests": "2.32.5", "rich": "15.0.0"}
 
-    def package(self, name, downloads=None):
+    def fetch(self, name, downloads=None):
         if name not in self.latest:
             return None
         return PackageInfo(name=name, version=self.latest[name])
@@ -321,11 +321,13 @@ def test_check_environment_lists_outdated_and_vulnerable():
     from pipseek.outdated import check_environment, outdated_dict, upgrade_command
 
     env, client = _FakeEnv(), _FakePyPI()
-    rows = check_environment(env, client)
+    result = check_environment(env, client)
+    rows = result.packages
+    assert result.complete
     assert [p.name for p in rows] == ["requests"]
     assert outdated_dict(rows[0])["fixed_in"] == "2.32.4"
     assert upgrade_command(env, rows) == "/usr/bin/python3 -m pip install --upgrade requests"
-    assert [p.name for p in check_environment(env, client, include_all=True)] == [
+    assert [p.name for p in check_environment(env, client, include_all=True).packages] == [
         "requests",
         "rich",
     ]

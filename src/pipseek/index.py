@@ -14,29 +14,34 @@ Everything is stored in a local SQLite database, so searches take milliseconds a
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import gzip
+import hashlib
 import io
 import math
 import os
 import re
 import sqlite3
+import tempfile
 import threading
 import time
+import zlib
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Callable, Optional
+from typing import BinaryIO, Callable, Optional
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import requests
 
 from pipseek.build_index import parse_lines
 from pipseek.cache import Cache
 
-INDEX_URL = os.environ.get(
-    "PIPSEEK_INDEX_URL",
-    "https://github.com/ohmybahgosh/pipseek/releases/download/index/pypi-index.tsv.gz",
+DEFAULT_INDEX_URL = (
+    "https://github.com/ohmybahgosh/pipseek/releases/download/index/pypi-index.tsv.gz"
 )
 SIMPLE_URL = "https://pypi.org/simple/"
 SIMPLE_ACCEPT = "application/vnd.pypi.simple.v1+json"
@@ -47,12 +52,18 @@ TOP_URL = (
 DB_TTL = 7 * 24 * 3600
 FALLBACK_TTL = 24 * 3600  # retry for the full index daily when we only have the fallback
 TOP_TTL = 7 * 24 * 3600
+TOP_RETRY = 6 * 3600  # after a failed download-stats fetch, don't retry for this long
+TOP_TIMEOUT = 15
+MAX_INDEX_DOWNLOAD = 200 * 1024 * 1024  # the compressed index is about 35 MB today
+MAX_INDEX_TEXT = 1024 * 1024 * 1024  # ...and about 150 MB uncompressed
+MIN_INDEX_RECORDS = 100_000
+MIN_SUMMARY_SHARE = 0.5  # a healthy index has summaries for about 90% of projects
 SCHEMA_VERSION = "1"
 EMPTY_SUMMARY_PENALTY = 150
 PHRASE_BONUS = 80
 
 _NORMALIZE_RE = re.compile(r"[-_.]+")
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_TOKEN_RE = re.compile(r"[^\W_]+")  # letters and digits in any script
 
 ProgressFn = Callable[[str], None]
 Record = tuple[str, str, str]  # name, summary, keywords
@@ -77,6 +88,15 @@ class Match:
 
 class IndexUnavailable(RuntimeError):
     """Raised when no package index can be downloaded or found in cache."""
+
+
+class IndexRejected(Exception):
+    """The downloaded index was too large, corrupt, or didn't match its checksum."""
+
+
+def index_url() -> str:
+    """Where to get the prebuilt index: PIPSEEK_INDEX_URL (http(s), file:// or a path)."""
+    return os.environ.get("PIPSEEK_INDEX_URL") or DEFAULT_INDEX_URL
 
 
 class PackageIndex:
@@ -140,6 +160,19 @@ class PackageIndex:
             raise IndexUnavailable("The local index could not be opened.")
         return cls(conn, downloads)
 
+    @classmethod
+    def open_cached(cls, cache: Optional[Cache] = None) -> Optional[PackageIndex]:
+        """The index already on disk, without touching the network; None if there isn't one."""
+        cache = cache or Cache()
+        db_path = cache.root / "index.sqlite"
+        if not db_path.exists():
+            return None
+        conn = _open_existing(db_path)
+        if conn is None:
+            return None
+        downloads = (cache.load("top-packages") or {}).get("data") or {}
+        return cls(conn, downloads)
+
     # Info -----------------------------------------------------------------------------------
 
     def __len__(self) -> int:
@@ -151,6 +184,17 @@ class PackageIndex:
     @property
     def source(self) -> str:
         return _meta(self.conn, "source") or "unknown"
+
+    def get(self, name: str) -> Optional[Match]:
+        """The index entry for one project, matched by normalized name."""
+        norm = normalize(name)
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT name, summary FROM packages WHERE norm = ?", (norm,)
+            ).fetchone()
+        if row is None:
+            return None
+        return Match(row[0], 0.0, self.downloads.get(norm), row[1] or "")
 
     # Scoring --------------------------------------------------------------------------------
 
@@ -347,44 +391,174 @@ def _rebuild_db(
     progress: Optional[ProgressFn],
     timeout: float,
 ) -> None:
-    records, source = _full_records(session, progress, timeout)
-    if records is None:
-        records, source = _fallback_records(session, progress, timeout), "names"
-
-    if progress:
-        progress("Building the local search database (about 10 seconds)...")
-    tmp = db_path.with_suffix(".tmp")
-    tmp.unlink(missing_ok=True)
-    conn = _connect(tmp)
+    # Build into a uniquely named temp file next to the database, then swap it in, so two
+    # pipseek runs never write to the same file and a reader never sees a half-built index.
+    fd, tmp_name = tempfile.mkstemp(prefix="index-", suffix=".tmp", dir=db_path.parent)
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
-        _build(conn, records, source)
+        if not _build_full(tmp, session, progress, timeout):
+            if _source_of(db_path) == "full":
+                # Don't replace a good full index with the names-only fallback; keep it and
+                # try again next run.
+                raise IndexUnavailable("Could not download a fresh search index.")
+            records = _fallback_records(session, progress, timeout)
+            if progress:
+                progress("Building the local search database (about 10 seconds)...")
+            conn = _connect(tmp)
+            try:
+                _build(conn, records, "names")
+            finally:
+                conn.close()
+        try:
+            os.replace(tmp, db_path)
+        except OSError as exc:
+            # On Windows this fails while another pipseek has the database open.
+            if not db_path.exists():
+                raise IndexUnavailable(f"Could not save the search database: {exc}") from exc
+            if progress:
+                progress("Another pipseek is using the search database; keeping the current one.")
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _source_of(db_path: Path) -> Optional[str]:
+    if not db_path.exists():
+        return None
+    conn = _open_existing(db_path)
+    if conn is None:
+        return None
+    try:
+        return _meta(conn, "source")
     finally:
         conn.close()
-    os.replace(tmp, db_path)
 
 
-def _full_records(
-    session: requests.Session, progress: Optional[ProgressFn], timeout: float
-) -> tuple[Optional[list[Record]], str]:
-    """Download the prebuilt full index (names + summaries + keywords)."""
+class _Meter(io.RawIOBase):
+    """Reads from a stream, stopping at a size limit and hashing what it read."""
+
+    def __init__(self, raw, limit: int, digest=None) -> None:
+        super().__init__()
+        self.raw = raw
+        self.limit = limit
+        self.digest = digest
+        self.count = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        data = self.raw.read(len(buffer))
+        n = len(data)
+        self.count += n
+        if self.count > self.limit:
+            raise IndexRejected(f"the index is larger than {self.limit // (1024 * 1024)} MB")
+        if self.digest is not None:
+            self.digest.update(data)
+        buffer[:n] = data
+        return n
+
+
+def _open_index(
+    session: requests.Session, timeout: float
+) -> Optional[tuple[BinaryIO, Optional[str], Callable[[], None]]]:
+    """(binary stream, expected sha256 or None, close function), or None if unavailable."""
+    url = index_url()
+    if url.startswith(("http://", "https://")):
+        expected = None
+        try:
+            resp = session.get(url + ".sha256", timeout=timeout)
+            if resp.status_code == 200:
+                expected = resp.text.split()[0].lower() if resp.text.strip() else None
+        except requests.RequestException:
+            pass
+        resp = session.get(url, timeout=timeout, stream=True)
+        if resp.status_code != 200:
+            resp.close()
+            return None
+        if int(resp.headers.get("Content-Length") or 0) > MAX_INDEX_DOWNLOAD:
+            resp.close()
+            return None
+        resp.raw.decode_content = True
+        return resp.raw, expected, resp.close
+    # A local file, as a path or a file:// URL.
+    path = url2pathname(urlparse(url).path) if url.startswith("file:") else url
+    expected = None
+    with contextlib.suppress(OSError, IndexError):
+        expected = Path(path + ".sha256").read_text().split()[0].lower()
+    fh = open(path, "rb")  # noqa: SIM115 - closed by the caller
+    return fh, expected, fh.close
+
+
+def _build_full(
+    tmp: Path, session: requests.Session, progress: Optional[ProgressFn], timeout: float
+) -> bool:
+    """Stream the prebuilt full index (names, summaries, keywords) into the database at tmp.
+
+    The file is decompressed and inserted row by row, so memory use stays flat no matter how
+    big PyPI gets.  Returns False (and the caller falls back) if it can't be downloaded or
+    doesn't look healthy.
+    """
     if progress:
         progress("Downloading the pipseek search index...")
     try:
-        resp = session.get(INDEX_URL, timeout=timeout)
-        if resp.status_code != 200:
-            return None, ""
-        text = gzip.decompress(resp.content).decode("utf-8")
-    except (requests.RequestException, OSError, EOFError, UnicodeDecodeError):
-        return None, ""
-    records = [(name, summary, kw) for name, _, summary, kw in parse_lines(io.StringIO(text))]
-    if len(records) < 100_000:  # a partial or broken asset; don't trust it
-        return None, ""
-    # Fill gaps (projects the builder hasn't reached yet) from the bundled summaries.
+        opened = _open_index(session, timeout)
+    except (requests.RequestException, OSError):
+        return False
+    if opened is None:
+        return False
+    raw, expected, close = opened
+    digest = hashlib.sha256() if expected else None
+    compressed = _Meter(raw, MAX_INDEX_DOWNLOAD, digest)
     bundled = {normalize(n): (s, k) for n, s, k in bundled_records()}
-    records = [
-        (n, s, k) if s or k else (n, *bundled.get(normalize(n), ("", ""))) for n, s, k in records
-    ]
-    return records, "full"
+    stats = {"rows": 0, "summaries": 0}
+
+    def records() -> Iterator[Record]:
+        gz = gzip.GzipFile(fileobj=io.BufferedReader(compressed), mode="rb")
+        text = io.TextIOWrapper(
+            io.BufferedReader(_Meter(gz, MAX_INDEX_TEXT)), encoding="utf-8", newline="\n"
+        )
+        for name, _, summary, keywords in parse_lines(text):
+            stats["rows"] += 1
+            if summary:
+                stats["summaries"] += 1
+            elif not keywords:
+                # Fill gaps (projects the builder hasn't reached yet) from bundled summaries.
+                summary, keywords = bundled.get(normalize(name), ("", ""))
+            yield name, summary, keywords
+
+    if progress:
+        progress("Building the local search database (about 10 seconds)...")
+    conn = _connect(tmp)
+    try:
+        _build(conn, records(), "full")
+        if digest is not None:
+            while compressed.readinto(bytearray(1 << 16)):
+                pass  # hash any trailing bytes the gzip reader didn't need
+    except (
+        requests.RequestException,
+        OSError,
+        EOFError,
+        zlib.error,
+        UnicodeDecodeError,
+        IndexRejected,
+        sqlite3.Error,
+    ) as exc:
+        if progress:
+            progress(f"The downloaded index was unusable ({exc}); using the fallback.")
+        return False
+    finally:
+        conn.close()
+        close()
+
+    if digest is not None and digest.hexdigest() != expected:
+        if progress:
+            progress("The downloaded index didn't match its checksum; using the fallback.")
+        return False
+    # A partial or broken asset (too few rows, or most summaries missing) isn't trusted.
+    rows, summaries = stats["rows"], stats["summaries"]
+    return rows >= MIN_INDEX_RECORDS and summaries >= rows * MIN_SUMMARY_SHARE
 
 
 def _fallback_records(
@@ -418,23 +592,29 @@ def load_downloads(
     cache: Cache,
     refresh: bool = False,
     progress: Optional[ProgressFn] = None,
-    timeout: float = 30,
+    timeout: float = TOP_TIMEOUT,
 ) -> dict[str, int]:
-    """30-day download counts for the ~15k most popular projects, keyed by normalized name."""
+    """30-day download counts for the ~15k most popular projects, keyed by normalized name.
+
+    If the download fails, an older copy is used and the next attempt waits TOP_RETRY, so an
+    offline run doesn't stall on this every time.
+    """
     key = "top-packages"
     if not refresh:
         cached = cache.get(key, TOP_TTL)
         if cached:
             return cached
+        if cache.get("top-packages-failed", TOP_RETRY):
+            return (cache.load(key) or {}).get("data") or {}
     try:
         if progress:
             progress("Fetching download statistics...")
-        resp = session.get(TOP_URL, timeout=timeout)
+        resp = session.get(TOP_URL, timeout=min(timeout, TOP_TIMEOUT))
         resp.raise_for_status()
         rows = resp.json().get("rows", [])
         data = {normalize(r["project"]): int(r["download_count"]) for r in rows}
-    except (requests.RequestException, ValueError, KeyError):
-        stale = cache.load(key)
-        return (stale or {}).get("data") or {}
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        cache.set("top-packages-failed", True)
+        return (cache.load(key) or {}).get("data") or {}
     cache.set(key, data)
     return data

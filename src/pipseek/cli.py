@@ -9,12 +9,13 @@ import textwrap
 from typing import Optional
 
 from rich.console import Console
+from rich.text import Text
 
 from pipseek import __version__
 from pipseek.cache import Cache
 from pipseek.env import PythonEnv
 from pipseek.index import IndexUnavailable, PackageIndex, load_downloads, normalize
-from pipseek.pypi import PyPIClient
+from pipseek.pypi import FetchError, PyPIClient, offline_package
 from pipseek.render import package_panel, results_table
 from pipseek.search import SORTS, Searcher
 
@@ -27,7 +28,12 @@ EPILOG = textwrap.dedent(
       pipseek http -s downloads -n 10 --json | jq '.[].name'
       pipseek --info requests       full details for one package
       pipseek --outdated            what's out of date or vulnerable in your environment
-      pipseek --outdated --strict   same, but exit 1 if anything installed is vulnerable (CI)
+      pipseek --outdated --strict   same, but fail if anything installed is vulnerable (CI)
+
+    --outdated --strict exit codes:
+      0  nothing installed is known to be vulnerable
+      1  something installed has a known vulnerability
+      2  some lookups failed (PyPI or OSV.dev unreachable), so the check is incomplete
 
     interactive keys:
       /  search    enter  run search    up/down or j/k  move
@@ -36,6 +42,8 @@ EPILOG = textwrap.dedent(
 
     environment:
       PIPSEEK_CACHE_DIR         override the cache location
+      PIPSEEK_INDEX_URL         use another prebuilt index: an http(s) URL, a file:// URL
+                                or a local path to a pypi-index.tsv.gz file
     """
 )
 
@@ -61,7 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--strict",
         action="store_true",
-        help="with --outdated: exit 1 if an installed version has a known vulnerability",
+        help="with --outdated: exit 1 if an installed version has a known vulnerability, "
+        "or 2 if some lookups failed",
     )
     p.add_argument("-P", "--plain", action="store_true", help="print results, no interactive UI")
     p.add_argument("-j", "--json", action="store_true", help="print results as JSON")
@@ -76,27 +85,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-github",
         dest="no_stats",
         action="store_true",
-        help="skip repository stats and vulnerability checks",
+        help="skip repository stats and vulnerability checks (also with --outdated)",
     )
     p.add_argument("--refresh", action="store_true", help="re-download the package index now")
-    p.add_argument("--clear-cache", action="store_true", help="delete cached data and exit")
+    p.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="delete the search database and all cached data, then exit",
+    )
     p.add_argument("-V", "--version", action="version", version=f"pipseek {__version__}")
     return p
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not args.outdated:
+        for flag in ("all", "strict"):
+            if getattr(args, flag):
+                parser.error(f"--{flag} only works with --outdated")
+    if args.strict and args.no_stats:
+        parser.error("--strict needs vulnerability checks, so it can't be used with --no-stats")
     err = Console(stderr=True)
     out = Console()
     cache = Cache()
 
     if args.clear_cache:
         removed = cache.clear()
-        err.print(f"Removed {removed} cached file(s) from {cache.root}")
+        err.print(Text(f"Removed {removed} cached file(s) from {cache.root}"))
         return 0
 
     if args.limit < 1 or args.page < 1:
-        err.print("[red]--limit and --page must be positive.[/]")
+        err.print(Text("--limit and --page must be positive.", style="red"))
         return 2
 
     env = PythonEnv(args.python)
@@ -134,7 +154,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             status.update(f"Searching {len(searcher.index):,} packages...")
             page = searcher.search(query, page=args.page, per_page=args.limit, sort=args.sort)
     except IndexUnavailable as exc:
-        err.print(f"[red]{exc}[/]")
+        err.print(Text(str(exc), style="red"))
         return 1
     except KeyboardInterrupt:
         return 130
@@ -144,7 +164,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if not page.packages:
-        err.print(f"No packages match [bold]{query}[/].")
+        err.print(Text.assemble("No packages match ", (query, "bold"), "."))
     else:
         out.print(results_table(page.packages, show_stars=not args.no_stats))
         footer = (
@@ -152,9 +172,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         if page.has_next:
             footer += f"  |  next: --page {page.page + 1}"
-        err.print(f"[dim]{footer}[/]")
+        err.print(Text(footer, style="dim"))
+        offline = sum(1 for p in page.packages if p.offline)
+        if offline:
+            err.print(
+                Text(
+                    f"Could not reach PyPI for {offline} of these, so they show only the name "
+                    "and summary from the local index.",
+                    style="yellow",
+                )
+            )
     if page.suggestions:
-        err.print(f"[yellow]Did you mean:[/] {', '.join(page.suggestions)}")
+        err.print(Text.assemble(("Did you mean: ", "yellow"), ", ".join(page.suggestions)))
     return 0
 
 
@@ -162,49 +191,120 @@ def _outdated(args, env: PythonEnv, cache: Cache, out: Console, err: Console) ->
     from pipseek.outdated import check_environment, outdated_dict, outdated_table, upgrade_command
 
     client = PyPIClient(cache=cache, stats=False, installed=env.version_of)
+    check_vulns = not args.no_stats
     if not env.installed:
-        err.print(f"[red]Could not list the packages installed for {env.python}.[/]")
+        err.print(Text(f"Could not list the packages installed for {env.python}.", style="red"))
         return 1
     with err.status("Checking installed packages...") as status:
-        packages = check_environment(
-            env, client, include_all=args.all, progress=lambda m: status.update(m)
+        result = check_environment(
+            env,
+            client,
+            include_all=args.all,
+            progress=lambda m: status.update(Text(m)),
+            vulns=check_vulns,
         )
-    vulnerable = [p for p in packages if p.installed_vulns]
+    packages = result.packages
+    vulnerable = result.vulnerable
     if args.json:
-        print(json.dumps([outdated_dict(p) for p in packages], indent=2))
+        rows = [outdated_dict(p) for p in packages]
+        rows += [
+            {
+                "name": name,
+                "installed": env.installed.get(name),
+                "latest": None,
+                "update_available": None,
+                "released": None,
+                "vulnerabilities": None,
+                "fixed_in": None,
+                "error": "could not reach PyPI",
+            }
+            for name in result.unreachable
+        ]
+        print(json.dumps(rows, indent=2))
     else:
-        err.print(f"[dim]Environment: {env.python}[/]")
-        if not packages:
-            err.print(
-                f"[green]All {len(env.installed)} installed packages are up to date, "
-                "with no known vulnerabilities.[/]"
-            )
-        else:
-            out.print(outdated_table(packages))
+        err.print(Text(f"Environment: {env.python}", style="dim"))
+        total = len(env.installed)
+        if not packages and result.complete:
+            tail = ", with no known vulnerabilities." if check_vulns else "."
+            err.print(Text(f"All {total} installed packages are up to date{tail}", style="green"))
+        elif packages:
+            out.print(outdated_table(packages, checked=check_vulns))
             outdated = sum(1 for p in packages if p.update_available)
-            err.print(
-                f"[dim]{outdated} outdated, {len(vulnerable)} with known vulnerabilities, "
-                f"out of {len(env.installed)} installed.  Vulnerability data: OSV.dev[/]"
-            )
+            summary = f"{outdated} outdated"
+            if check_vulns:
+                summary += f", {len(vulnerable)} with known vulnerabilities"
+            summary += f", out of {total} installed."
+            if check_vulns:
+                summary += "  Vulnerability data: OSV.dev"
+            err.print(Text(summary, style="dim"))
             if env.externally_managed:
                 err.print(
-                    "[yellow]This is a system Python managed by your OS, so pip shouldn't "
-                    "upgrade it directly.[/]  Update these through your package manager, "
-                    "or install what you need in a virtualenv or with pipx."
+                    Text.assemble(
+                        (
+                            "This is a system Python managed by your OS, so pip shouldn't "
+                            "upgrade it directly.",
+                            "yellow",
+                        ),
+                        "  Update these through your package manager, "
+                        "or install what you need in a virtualenv or with pipx.",
+                    )
                 )
             else:
                 cmd = upgrade_command(env, packages)
                 if cmd:
-                    label = "Upgrade" if outdated <= 12 else "Start with"
-                    err.print(f"[bold]{label}:[/] {cmd}")
-    return 1 if args.strict and vulnerable else 0
+                    label = "Upgrade: " if outdated <= 12 else "Start with: "
+                    err.print(Text.assemble((label, "bold"), cmd))
+        if not check_vulns:
+            err.print(Text("Vulnerabilities were not checked (--no-stats).", style="dim"))
+    _warn_incomplete(result, err)
+    if args.strict:
+        if vulnerable:
+            return 1
+        if not result.complete:
+            return 2
+    return 0
+
+
+def _warn_incomplete(result, err: Console) -> None:
+    def names(items: list[str]) -> str:
+        shown = ", ".join(items[:8])
+        return shown + (f" and {len(items) - 8} more" if len(items) > 8 else "")
+
+    if result.unreachable:
+        err.print(
+            Text(
+                f"Could not reach PyPI for {len(result.unreachable)} package(s), so they were "
+                f"not checked: {names(result.unreachable)}",
+                style="yellow",
+            )
+        )
+    if result.unchecked:
+        err.print(
+            Text(
+                f"Could not reach OSV.dev for {len(result.unchecked)} package(s), so their "
+                f"vulnerabilities are unknown: {names(result.unchecked)}",
+                style="yellow",
+            )
+        )
 
 
 def _info(args, client: PyPIClient, cache: Cache, out: Console, err: Console) -> int:
-    downloads = load_downloads(client.session, cache).get(normalize(args.info))
-    pkg = client.package(args.info, downloads)
+    name = args.info
+    downloads = load_downloads(client.session, cache).get(normalize(name))
+    try:
+        pkg = client.fetch(name, downloads)
+    except FetchError as exc:
+        index = PackageIndex.open_cached(cache)
+        match = index.get(name) if index else None
+        if match is None:
+            err.print(Text(f"Could not reach PyPI to look up '{name}' ({exc}).", style="red"))
+            return 1
+        pkg = offline_package(match.name, match.summary, match.downloads)
+        err.print(
+            Text("Could not reach PyPI, so this shows what the local index has.", style="yellow")
+        )
     if pkg is None:
-        err.print(f"[red]Package '{args.info}' was not found on PyPI.[/]")
+        err.print(Text(f"Package '{name}' was not found on PyPI.", style="red"))
         return 1
     if args.json:
         print(json.dumps(pkg.to_dict(), indent=2))

@@ -14,6 +14,17 @@ from pipseek.pypi import PackageInfo, days_since
 from pipseek.vulns import max_severity, min_fix
 
 
+def plain(value) -> Text:
+    """Text that Rich shows literally.
+
+    Summaries, authors, URLs and queries come from PyPI uploaders and users, so square brackets
+    in them must never be read as Rich markup (``[link=...]``, ``[/]``).
+    """
+    if isinstance(value, Text):
+        return value
+    return Text("" if value is None else str(value))
+
+
 def human_count(n: Optional[int]) -> str:
     if n is None:
         return "-"
@@ -100,6 +111,9 @@ def vulns_text(vulns: list, limit: int = 5) -> Table:
 
 def status_badges(pkg: PackageInfo) -> Text:
     text = Text()
+    if pkg.offline:
+        text.append(" PyPI unreachable: name and summary from the local index ", "black on yellow")
+        text.append(" ")
     if pkg.installed_vulns:
         n = len(pkg.installed_vulns)
         fix = min_fix(pkg.installed_vulns)
@@ -138,20 +152,22 @@ def results_table(packages: list[PackageInfo], show_stars: bool = True) -> Table
             name.append(" !", style="bold red")
         row = [
             name,
-            pkg.version,
+            plain("-" if pkg.offline else pkg.version or "-"),
             Text(human_age(pkg.released), style=age_style(pkg.released)),
             human_count(pkg.downloads_30d),
         ]
         if show_stars:
             row.append(human_count(pkg.stars))
-        row.append(pkg.summary or Text("no description", style="dim italic"))
+        no_summary = Text("no description", style="dim italic")
+        row.append(plain(pkg.summary) if pkg.summary else no_summary)
         table.add_row(*row)
     return table
 
 
 def package_panel(pkg: PackageInfo, full: bool = False) -> Panel:
     """A detailed card for one package."""
-    title = Text.assemble((pkg.name, "bold white"), "  ", (f"v{pkg.version}", "bold green"))
+    version = f"v{pkg.version}" if pkg.version and pkg.version != "?" else ""
+    title = Text.assemble((pkg.name, "bold white"), "  ", (version, "bold green"))
 
     body = Table.grid(padding=(0, 2))
     body.add_column(style="bold cyan", no_wrap=True)
@@ -159,7 +175,7 @@ def package_panel(pkg: PackageInfo, full: bool = False) -> Panel:
 
     def row(label: str, value) -> None:
         if value:
-            body.add_row(label, value)
+            body.add_row(plain(label), value if not isinstance(value, str) else plain(value))
 
     badges = status_badges(pkg)
     if badges:

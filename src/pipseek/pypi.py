@@ -60,6 +60,7 @@ class PackageInfo:
     vulns: Optional[list[Vuln]] = None  # known vulnerabilities in the latest version
     installed_vulns: Optional[list[Vuln]] = None  # ...and in the installed version
     installed_version: Optional[str] = None
+    offline: bool = False  # True when PyPI couldn't be reached and only local index data is shown
 
     @property
     def install_command(self) -> str:
@@ -67,7 +68,7 @@ class PackageInfo:
 
     @property
     def update_available(self) -> bool:
-        if not self.installed_version:
+        if not self.installed_version or self.offline or self.version in ("", "?"):
             return False
         try:
             return Version(self.version) > Version(self.installed_version)
@@ -164,6 +165,22 @@ def source_project(url: Optional[str]) -> Optional[str]:
     return f"{host}/{owner}/{repo}".lower()
 
 
+class FetchError(Exception):
+    """PyPI couldn't be reached (network error, timeout or a 5xx), as opposed to a 404."""
+
+
+def offline_package(name: str, summary: str = "", downloads: Optional[int] = None) -> PackageInfo:
+    """A stand-in built from the local index when PyPI can't be reached."""
+    return PackageInfo(
+        name=name,
+        version="?",
+        summary=summary or None,
+        pypi_url=f"https://pypi.org/project/{name}/",
+        downloads_30d=downloads,
+        offline=True,
+    )
+
+
 class PyPIClient:
     def __init__(
         self,
@@ -183,23 +200,21 @@ class PyPIClient:
         self.timeout = timeout
         self.max_workers = max_workers
 
-    def package(self, name: str, downloads: Optional[int] = None) -> Optional[PackageInfo]:
+    def fetch(self, name: str, downloads: Optional[int] = None) -> Optional[PackageInfo]:
+        """Details for one package: None if PyPI says it doesn't exist (404).
+
+        Raises FetchError when PyPI can't be reached and nothing is cached, so callers can tell
+        "not found" apart from "offline".  A cached copy older than DETAILS_TTL is still used
+        when the network is down.
+        """
         key = f"pkg/{name.lower()}"
         data = self.cache.get(key, DETAILS_TTL)
         if data is None:
-            try:
-                resp = self.session.get(f"https://pypi.org/pypi/{name}/json", timeout=self.timeout)
-            except requests.RequestException:
+            data, fresh = self._download(name)
+            if data is None:
                 return None
-            if resp.status_code != 200:
-                return None
-            try:
-                full = resp.json()
-            except ValueError:
-                return None
-            # The "releases" map can be megabytes; we never need it.
-            data = {"info": full.get("info"), "urls": full.get("urls")}
-            self.cache.set(key, data)
+            if fresh:
+                self.cache.set(key, data)
 
         pkg = parse_package(data)
         pkg.downloads_30d = downloads
@@ -210,16 +225,57 @@ class PyPIClient:
             self.add_vulns(pkg)
         return pkg
 
+    def _download(self, name: str) -> tuple[Optional[dict], bool]:
+        """(data, fresh): fresh is False when an expired cached copy stood in for PyPI."""
+        url = f"https://pypi.org/pypi/{quote(name, safe='')}/json"
+        try:
+            resp = self.session.get(url, timeout=self.timeout)
+            if resp.status_code == 404:
+                return None, True
+            if resp.status_code != 200:
+                raise FetchError(f"PyPI answered {resp.status_code} for {name}")
+            full = resp.json()
+        except (requests.RequestException, ValueError, FetchError) as exc:
+            stale = self.cache.load(f"pkg/{name.lower()}")
+            if stale and stale.get("data"):
+                return stale["data"], False
+            raise FetchError(str(exc)) from exc
+        # The "releases" map can be megabytes; we never need it.
+        return {"info": full.get("info"), "urls": full.get("urls")}, True
+
+    def package(self, name: str, downloads: Optional[int] = None) -> Optional[PackageInfo]:
+        """Like fetch(), but None for both "not found" and "unreachable"."""
+        try:
+            return self.fetch(name, downloads)
+        except FetchError:
+            return None
+
     def packages(
-        self, names: list[str], downloads: Optional[dict[str, int]] = None
+        self,
+        names: list[str],
+        downloads: Optional[dict[str, int]] = None,
+        fallback: Optional[Callable[[str], Optional[PackageInfo]]] = None,
     ) -> list[PackageInfo]:
-        """Fetch many packages concurrently, preserving input order and skipping failures."""
+        """Fetch many packages concurrently, preserving input order.
+
+        Packages PyPI doesn't know (404) are skipped.  When PyPI can't be reached, ``fallback``
+        supplies a stand-in (see offline_package) so a page isn't silently shortened.
+        """
         downloads = downloads or {}
         if not names:
             return []
+        if self.installed:
+            # Load the installed list once, before the threads start.
+            self.installed("pip")
+
+        def one(name: str) -> Optional[PackageInfo]:
+            try:
+                return self.fetch(name, downloads.get(name))
+            except FetchError:
+                return fallback(name) if fallback else None
+
         with ThreadPoolExecutor(max_workers=min(self.max_workers, len(names))) as pool:
-            results = pool.map(lambda n: self.package(n, downloads.get(n)), names)
-            return [r for r in results if r is not None]
+            return [r for r in pool.map(one, names) if r is not None]
 
     def add_vulns(self, pkg: PackageInfo) -> None:
         """Known vulnerabilities (OSV.dev) for the latest and the installed version."""

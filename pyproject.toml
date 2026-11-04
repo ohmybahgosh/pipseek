@@ -19,6 +19,12 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development",
     "Topic :: System :: Software Distribution",
     "Topic :: Utilities",
@@ -42,6 +48,11 @@ Issues = "https://github.com/ohmybahgosh/pipseek/issues"
 
 [tool.hatch.version]
 path = "src/pipseek/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+# Screenshots, the banner and CI config are for GitHub; the sdist only needs the code, tests
+# and docs.
+exclude = ["/assets", "/.github"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pipseek"]

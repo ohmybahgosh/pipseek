@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.2.0 (2026-11)
+
+Fixes from a full review of 2.1.0.  Some command-line behavior changed, so this is 2.2.0 instead of 2.1.1: `--strict` has a new exit code, and flags that used to be ignored now stop with an error.
+
+### Security
+
+- Text from PyPI (summaries, authors, licenses, URLs, keywords, extras) and your own search terms are now always shown as plain text.  Before, square brackets were read as terminal markup.  A summary like `qiniu://<bucket>[/name_of_dir]` crashed every search it showed up in, 488 other real summaries lost words on screen (`agentassert-abc[claude-code]` showed as `agentassert-abc`), and a package author could hide links or fake badges.  Searching for `[/]` crashed too.
+- The search index download is checked against a published SHA-256 checksum, capped in size, and rejected when most summaries are missing.
+- The PyPI publish action in the release workflow is pinned to a commit.
+
+### Fixes
+
+- "Installed" badges are reliable again.  Search looks up packages on several threads, and all but the first could see an empty list of installed packages, so `pipseek --json requests` often reported `installed_version: null`, and the red "your installed version is vulnerable" badge could go missing.
+- `pipseek --outdated` no longer reports "no known vulnerabilities" when it couldn't check.  It lists the packages PyPI or OSV.dev couldn't be reached for, shows "couldn't check" in the table, and uses `null` instead of `[]` in `--json` output.
+- Offline, search shows matches from the local index (name and summary) instead of "No packages match", and `--info` does the same instead of "not found on PyPI".  Expired cached details are used when PyPI can't be reached, and a failed lookup no longer silently shortens a page of results.
+- A truncated or corrupt cache file no longer crashes every run.  It's deleted and fetched again.
+- `--clear-cache` now removes the search database (about 175 MB) and leftover temp files too, as the README said.
+- The first index build streams the download into the database instead of holding it all in memory.  Peak memory for a first run dropped from about 1 GB to about 60 MB.
+- Temp files get unique names, so two pipseek runs at once can't overwrite each other's.  On Windows, if another pipseek has the database open, the old one is kept instead of crashing.  A failed index download no longer replaces a full index with the names-only fallback.
+- Conda on Windows (`python.exe` at the env root) is detected, the Microsoft Store `python` placeholder is skipped, and upgrade commands quote paths with spaces.
+- Searches in other scripts work (`pipseek "ελληνικά"` used to find nothing).
+- When download statistics can't be fetched, pipseek waits 6 hours before trying again instead of stalling every run.
+
+### Changed
+
+- `--outdated --strict` exits 2 when some lookups failed, so CI doesn't pass on a check that never happened.  1 still means something installed is vulnerable.
+- `--no-stats` now also skips vulnerability checks in `--outdated`, as its help text said.  It can't be combined with `--strict`.
+- `--all` and `--strict` stop with an error when used without `--outdated`, instead of being ignored.
+- `PIPSEEK_INDEX_URL` accepts a local path or a `file://` URL as well as http(s), and is listed in `--help`.
+
+### Project
+
+- CI checks out with read-only permissions, tests Python 3.14 too, and builds the package and runs `twine check` on every push.
+- The sdist no longer includes screenshots and CI files (6.4 MB down to about 0.7 MB), and the package lists the Python versions it supports.
+- The daily index job fails when the previous index can't be downloaded, instead of quietly starting over, and won't publish an index that's missing most summaries.  It uploads under a temporary name and then swaps, so the download never disappears mid-upload, publishes a `.sha256` next to it, and keeps its schedule from being switched off after 60 quiet days.
+
 ## 2.1.0 (2026-11)
 
 ### Security

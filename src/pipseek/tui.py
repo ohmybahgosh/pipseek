@@ -14,7 +14,7 @@ from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, St
 from textual.worker import get_current_worker
 
 from pipseek import __version__
-from pipseek.env import PythonEnv
+from pipseek.env import PythonEnv, format_command
 from pipseek.index import IndexUnavailable
 from pipseek.pypi import PackageInfo
 from pipseek.render import age_style, human_age, human_count, package_panel, vuln_label
@@ -30,7 +30,10 @@ class ResultItem(ListItem):
         pkg = self.pkg
         line = Text()
         line.append(pkg.name, style="bold")
-        line.append(f"  {pkg.version}", style="green")
+        if pkg.offline:
+            line.append("  offline", style="yellow")
+        else:
+            line.append(f"  {pkg.version}", style="green")
         if pkg.installed_version:
             line.append("  *", style="yellow" if pkg.update_available else "green")
         meta = Text()
@@ -117,7 +120,11 @@ class PipSeekApp(App):
 
     # Helpers -------------------------------------------------------------------------------
 
-    def set_status(self, message: str) -> None:
+    def set_status(self, message) -> None:
+        """Show a message under the results.  Plain strings are shown literally, never as markup,
+        because they can contain the user's query or text from PyPI."""
+        if not isinstance(message, Text):
+            message = Text(str(message))
         self.query_one("#status", Static).update(message)
 
     @property
@@ -136,7 +143,7 @@ class PipSeekApp(App):
         try:
             self.searcher = self._factory(lambda msg: self.call_from_thread(self.set_status, msg))
         except IndexUnavailable as exc:
-            self.call_from_thread(self.set_status, f"[red]{exc}[/]")
+            self.call_from_thread(self.set_status, Text(str(exc), style="red"))
             return
         index = self.searcher.index
         note = "" if index.source == "full" else " (descriptions for popular packages only)"
@@ -184,6 +191,8 @@ class PipSeekApp(App):
             msg = f"No packages match '{result.query}'."
         if result.suggestions:
             msg += f"  |  did you mean: {', '.join(result.suggestions)}?"
+        if any(p.offline for p in result.packages):
+            msg += "  |  PyPI unreachable: showing the local index"
         self.set_status(msg)
 
     # Events --------------------------------------------------------------------------------
@@ -232,7 +241,7 @@ class PipSeekApp(App):
         pkg = self.selected
         if pkg:
             self.copy_to_clipboard(pkg.install_command)
-            self.notify(f"Copied: {pkg.install_command}")
+            self.notify(f"Copied: {pkg.install_command}", markup=False)
 
     def action_open_pypi(self) -> None:
         pkg = self.selected
@@ -257,10 +266,11 @@ class PipSeekApp(App):
                 "Activate a virtualenv or start pipseek with --python.",
                 severity="warning",
                 timeout=8,
+                markup=False,
             )
             return
         upgrade = pkg.update_available
-        cmd = " ".join(self.env.install_command(pkg.name, upgrade))
+        cmd = format_command(self.env.install_command(pkg.name, upgrade))
         with self.suspend():
             print(f"\n$ {cmd}\n")
             code = self.env.install(pkg.name, upgrade)
@@ -268,6 +278,8 @@ class PipSeekApp(App):
         if code == 0:
             pkg.installed_version = pkg.version
             self.show_detail(pkg)
-            self.notify(f"Installed {pkg.name} {pkg.version}")
+            self.notify(f"Installed {pkg.name} {pkg.version}", markup=False)
         else:
-            self.notify(f"pip install {pkg.name} failed (exit {code})", severity="error")
+            self.notify(
+                f"pip install {pkg.name} failed (exit {code})", severity="error", markup=False
+            )

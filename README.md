@@ -29,10 +29,10 @@ pipseek "web framework"
 >
 > That real-world testing is what shaped v2: dropping the bot-challenge workaround in favor of PyPI's official APIs, tuning the ranking against the full 930k-package index so unused placeholder packages stop outranking Django, replacing GitHub's rate-limited API with keyless [deps.dev](https://deps.dev) stats, and catching a plain-mode crash before it shipped.  The [changelog](https://github.com/ohmybahgosh/pipseek/blob/main/CHANGELOG.md) has the details.
 >
-> - **Tests on every push:** [pytest](https://github.com/ohmybahgosh/pipseek/blob/main/tests/test_pipseek.py) covers ranking, description search, typo suggestions, paging, parsing PyPI metadata, the index file format, merging OSV advisories and picking fix versions, the `--outdated` report, the CLI's plain and JSON modes and the detail card, plus `ruff` linting.  CI runs it on Linux, macOS and Windows with Python 3.9 and 3.13.  The CI badge above shows the latest run.
+> - **Tests on every push:** [pytest](https://github.com/ohmybahgosh/pipseek/tree/main/tests) covers ranking, description search, typo suggestions, paging, parsing PyPI metadata, the index file format, merging OSV advisories and picking fix versions, the `--outdated` report and its exit codes, the CLI's plain and JSON modes and the detail card.  It also covers the hard cases: package text that looks like terminal markup, many threads at once, no network, corrupt cache files, a bad or oversized index download, and Windows paths.  `ruff` lints it, and CI runs everything on Linux, macOS and Windows with Python 3.9, 3.13 and 3.14, then builds and checks the package.  The CI badge above shows the latest run.
 > - **Read-only by default:** pipseek only reads public data and writes to its own cache folder.  The one exception is the `i` key in the TUI, which runs `pip install` in your environment after showing you the exact command, and refuses on an OS-managed Python.
 >
-> Commits list me as the author and Claude as the committer, which is why they show as Verified.  Found a problem?  [Open an issue](https://github.com/ohmybahgosh/pipseek/issues/new).
+> Commits list me as the author, and the AI's part is in the open.  Found a problem?  [Open an issue](https://github.com/ohmybahgosh/pipseek/issues/new).
 
 ## Contents
 
@@ -85,12 +85,12 @@ pipseek "web framework"
 - **Rich details:** version, release age (green, yellow or red by freshness), downloads, stars and forks, open issues, the [OpenSSF Scorecard](https://securityscorecards.dev) security score, author, license, Python requirement, links, extras and dependencies.
 - **Known vulnerabilities** from [OSV.dev](https://osv.dev), for the latest version and for the version you have installed, with severity, CVE and the version that fixes it.
 - **`pipseek --outdated`** checks your whole environment: what's out of date, what's vulnerable, and the upgrade command to fix it.  `--strict` makes it fail CI when something installed is vulnerable.
-- **Knows your environment:** marks packages already installed in your active virtualenv (or `python3` on your PATH) and flags available updates.
+- **Knows your environment:** marks packages already installed in your active virtualenv or conda env (otherwise the Python on your PATH) and flags available updates.
 - **One-key actions:** copy the install command, open PyPI or the repo in your browser, or install and upgrade without leaving the TUI.
 - **"Did you mean?"** suggestions for typos, drawn from popular packages first.
 - **Script-friendly:** `--plain` prints a table, `--json` gives structured output for `jq`, and piped output switches to plain mode on its own.
 - **No API keys, no accounts:** everything comes from public, keyless APIs.
-- **Fast and offline-friendly:** the index lives in a local SQLite full-text database.  After the first run, searches don't need the network, and details are cached for an hour.
+- **Fast, and works offline:** the index lives in a local SQLite full-text database.  After the first run, searches don't need the network.  Details are cached for an hour, and when PyPI can't be reached pipseek shows the name and summary from the local index instead.
 
 ## Install
 
@@ -140,7 +140,7 @@ pipseek "pdf parser"      # multi-word searches match descriptions too
 | `Esc` | Jump from the search box back to the results |
 | `q` | Quit |
 
-The `i` key installs into the same environment pipseek checks for installed packages: your active virtualenv or conda env, otherwise the first `python3` on your PATH.  Use `--python` to pick a different one.
+The `i` key installs into the same environment pipseek checks for installed packages: your active virtualenv or conda env, otherwise the first `python3` on your PATH (`python` on Windows).  Use `--python` to pick a different one.
 
 ### Plain, JSON and info modes
 
@@ -173,14 +173,25 @@ pipseek yaml --plain --page 2              # the next page of results
   <img src="https://raw.githubusercontent.com/ohmybahgosh/pipseek/main/assets/screenshots/cli-outdated.png" width="100%" alt="pipseek --outdated in a project virtualenv: certifi, urllib3, Werkzeug, Flask, pip, Jinja2, requests and idna listed with their known vulnerabilities and the version that fixes them, followed by outdated packages with none known, a summary line and the pip upgrade command" />
 </p>
 
-`pipseek --outdated` checks every package in your environment against PyPI and [OSV.dev](https://osv.dev), puts the vulnerable ones first, and ends with the upgrade command.  It checks the same environment pipseek uses for installed badges: your active virtualenv, otherwise the first `python3` on your PATH, or whatever you pass to `--python`.
+`pipseek --outdated` checks every package in your environment against PyPI and [OSV.dev](https://osv.dev), puts the vulnerable ones first, and ends with the upgrade command.  It checks the same environment pipseek uses for installed badges: your active virtualenv or conda env, otherwise the Python on your PATH, or whatever you pass to `--python`.
 
 ```bash
 pipseek --outdated                    # outdated or vulnerable packages, worst first
 pipseek --outdated --all              # every installed package
 pipseek --outdated --json             # for scripts and dashboards
-pipseek --outdated --strict           # exit 1 if anything installed is vulnerable (for CI)
+pipseek --outdated --strict           # fail if anything installed is vulnerable (for CI)
+pipseek --outdated --no-stats         # only what's outdated, without asking OSV.dev
 ```
+
+With `--strict`, the exit code tells you what happened:
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Nothing installed is known to be vulnerable |
+| `1` | Something installed has a known vulnerability |
+| `2` | Some lookups failed (PyPI or OSV.dev couldn't be reached), so the check is incomplete |
+
+When a lookup fails, pipseek says which packages it couldn't check instead of calling them safe.  In `--json` output, `"vulnerabilities": null` means unknown, and `[]` means none are known.
 
 Search results show the same check.  When the version you have installed has known vulnerabilities, the detail pane says so in red, lists them with the fix version, and the results list flags them:
 
@@ -205,24 +216,26 @@ Search results show the same check.  When the version you have installed has kno
 | `-i, --info PACKAGE` | Show the full detail card for one package |
 | `-o, --outdated` | List installed packages that are outdated or have known vulnerabilities |
 | `--all` | With `--outdated`: list every installed package |
-| `--strict` | With `--outdated`: exit with status 1 if an installed version has a known vulnerability |
+| `--strict` | With `--outdated`: exit 1 if an installed version has a known vulnerability, or 2 if some lookups failed |
 | `-P, --plain` | Print a table instead of opening the TUI |
 | `-j, --json` | Print results as JSON |
 | `-n, --limit N` | Results per page (default 20) |
 | `-p, --page N` | Page number |
 | `-s, --sort` | `relevance`, `downloads`, `updated`, `name` or `stars` |
 | `--python PATH` | Interpreter used for installed checks and `i` installs |
-| `--no-stats` | Skip repository stats and vulnerability checks (faster, fewer requests) |
+| `--no-stats` | Skip repository stats and vulnerability checks, in searches and in `--outdated` (faster, fewer requests).  Can't be combined with `--strict` |
 | `--refresh` | Download the search index again now |
-| `--clear-cache` | Delete everything pipseek has cached |
+| `--clear-cache` | Delete the search database and everything else pipseek has cached |
 | `-V, --version` | Print the version |
+
+`--all` and `--strict` only work together with `--outdated`; pipseek stops with an error if you use them on their own.
 
 `relevance`, `downloads` and `name` sort all matches.  `updated` and `stars` need live data, so they sort the page you're on.
 
 | Environment variable | Purpose |
 | --- | --- |
 | `PIPSEEK_CACHE_DIR` | Use a different cache folder |
-| `PIPSEEK_INDEX_URL` | Use a different prebuilt search index |
+| `PIPSEEK_INDEX_URL` | Use a different prebuilt search index: an `http(s)://` URL, a `file://` URL, or a local path to a `pypi-index.tsv.gz` file |
 | `VIRTUAL_ENV` / `CONDA_PREFIX` | Picked up automatically to decide which environment counts as "installed" |
 
 ## How it works
@@ -234,7 +247,7 @@ Search results show the same check.  When the version you have installed has kno
 PyPI has no public full-text search API, so pipseek brings its own index:
 
 1. **A daily GitHub Action** ([`index.yml`](https://github.com/ohmybahgosh/pipseek/blob/main/.github/workflows/index.yml)) runs [`pipseek.build_index`](https://github.com/ohmybahgosh/pipseek/blob/main/src/pipseek/build_index.py).  The PyPI Simple API reports a change serial for every project, so the build only re-fetches projects that changed since yesterday, usually a few thousand.  It publishes `pypi-index.tsv.gz` (name, summary and keywords for every project) on the [`index` release](https://github.com/ohmybahgosh/pipseek/releases/tag/index).
-2. **On your machine,** pipseek downloads that file and builds a SQLite FTS5 database from it, once a week.
+2. **On your machine,** pipseek downloads that file once a week, checks it against its published SHA-256 checksum, and streams it into a SQLite FTS5 database, so memory use stays low.  A download that's corrupt, oversized or mostly missing summaries is rejected, and the database you already have is kept.
 3. **Each search** combines name matches, BM25 relevance over summaries and keywords, and 30-day download counts, then fetches live details for just the page you're viewing.
 4. **If the release can't be reached,** pipseek falls back to every project name from PyPI plus summaries for the 15,000 most popular projects, which ship inside the package, and tries for the full index again the next day.
 
@@ -264,15 +277,15 @@ pipseek identifies itself to these services as `pipseek/<version>` with a link t
 
 **How fresh are the results?**  The index is rebuilt every day, and pipseek downloads it weekly.  Versions, release dates and stats for the results you look at are always live (cached for an hour).
 
-**How much disk space does it use?**  About 175 MB for the search database, in `~/.cache/pipseek` on Linux, `~/Library/Caches/pipseek` on macOS, or `%LOCALAPPDATA%\pipseek` on Windows.  `pipseek --clear-cache` removes it.
+**How much disk space does it use?**  About 175 MB for the search database, in `~/.cache/pipseek` on Linux, `~/Library/Caches/pipseek` on macOS, or `%LOCALAPPDATA%\pipseek` on Windows.  `pipseek --clear-cache` removes it, along with every other cached file.
 
-**Does it work offline?**  Searching does, once the index is built.  The detail pane needs the network for anything it hasn't cached yet.
+**Does it work offline?**  Yes, once the index is built.  Searching is local.  For details, pipseek uses anything it has cached, even if it's old, and otherwise shows the name and summary from the local index with a note that PyPI couldn't be reached.  `--info` works the same way.
 
-**Why is a package marked "installed" when I installed it somewhere else?**  pipseek checks one environment: your active virtualenv or conda env, otherwise the first `python3` on your PATH.  Pass `--python /path/to/python` to check a different one.
+**Why is a package marked "installed" when I installed it somewhere else?**  pipseek checks one environment: your active virtualenv or conda env, otherwise the first `python3` on your PATH (`python` on Windows, skipping the Microsoft Store placeholder).  Pass `--python /path/to/python` to check a different one.
 
 **Is `--outdated` a replacement for pip-audit?**  For a quick look, often yes: it uses the same OSV data and adds what's outdated.  pip-audit goes further for CI pipelines (requirements files, SBOMs, auto-fixing), so use it when you need those.
 
-**Can I build the index myself?**  Yes: `python -m pipseek.build_index --out pypi-index.tsv.gz` builds all of PyPI in about 30 minutes, then point pipseek at it with `PIPSEEK_INDEX_URL`.
+**Can I build the index myself?**  Yes: `python -m pipseek.build_index --out pypi-index.tsv.gz` fetches every project from PyPI's JSON API.  A full first build takes many hours, so the builder stops after a time budget (`--time-budget`, 5 hours by default) and picks up where it left off when you run it again with `--previous pypi-index.tsv.gz`.  Expect several runs.  `python -m pipseek.build_index --check pypi-index.tsv.gz` tells you when it's complete enough to use.  Then point pipseek at it with `PIPSEEK_INDEX_URL=/path/to/pypi-index.tsv.gz`.
 
 ## Development
 
@@ -284,7 +297,7 @@ ruff check src tests
 pytest
 ```
 
-The code lives in [`src/pipseek`](https://github.com/ohmybahgosh/pipseek/blob/main/src/pipseek): `index.py` (local search index and ranking), `build_index.py` (the index builder), `pypi.py` (PyPI and deps.dev clients), `search.py`, `tui.py`, `render.py` and `cli.py`.  Issues and pull requests are welcome.
+The code lives in [`src/pipseek`](https://github.com/ohmybahgosh/pipseek/blob/main/src/pipseek): `index.py` (local search index and ranking), `build_index.py` (the index builder), `pypi.py` (PyPI and deps.dev clients), `vulns.py` (OSV.dev), `outdated.py`, `env.py` (your Python environment), `cache.py`, `search.py`, `tui.py`, `render.py` and `cli.py`.  Issues and pull requests are welcome.
 
 ## Credits
 

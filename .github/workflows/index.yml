@@ -1,8 +1,9 @@
 name: Search index
 
 # Rebuilds the full PyPI search index (names, summaries, keywords) and publishes it as the
-# `pypi-index.tsv.gz` asset on the `index` release, which pipseek clients download.
-# Incremental: only projects that changed since the last run are re-fetched.
+# `pypi-index.tsv.gz` asset on the `index` release, with a `.sha256` next to it.  pipseek
+# clients download both.  Incremental: only projects that changed since the last run are
+# re-fetched.
 
 on:
   schedule:
@@ -11,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  actions: write # for the keepalive step below
 
 concurrency:
   group: search-index
@@ -22,6 +24,7 @@ jobs:
     timeout-minutes: 340
     env:
       GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,8 +34,15 @@ jobs:
 
       - name: Download previous index
         run: |
-          gh release download index --pattern pypi-index.tsv.gz --dir prev || echo "No previous index"
-          ls -la prev || true
+          set -euo pipefail
+          if gh release view index >/dev/null 2>&1; then
+            # The release exists, so a failed download is a real problem: stop here rather
+            # than re-fetching all of PyPI and publishing a half-empty index.
+            gh release download index --pattern pypi-index.tsv.gz --dir prev
+            python -m pipseek.build_index --check prev/pypi-index.tsv.gz
+          else
+            echo "No index release yet; building from scratch."
+          fi
 
       - name: Build index
         run: |
@@ -40,10 +50,48 @@ jobs:
           if [ -f prev/pypi-index.tsv.gz ]; then PREV="--previous prev/pypi-index.tsv.gz"; fi
           python -m pipseek.build_index $PREV --out pypi-index.tsv.gz --time-budget 18000 --concurrency 32
 
-      - name: Publish
+      - name: Check the new index
         run: |
+          # Refuse to publish an index with too few projects or most summaries missing.
+          # A first build that runs out of time is fine to keep locally; it just isn't published
+          # until it passes.
+          if [ -f prev/pypi-index.tsv.gz ]; then
+            python -m pipseek.build_index --check pypi-index.tsv.gz
+          else
+            python -m pipseek.build_index --check pypi-index.tsv.gz || echo "SKIP_PUBLISH=1" >> "$GITHUB_ENV"
+          fi
+          sha256sum pypi-index.tsv.gz > pypi-index.tsv.gz.sha256
+          cat pypi-index.tsv.gz.sha256
+
+      - name: Publish
+        if: env.SKIP_PUBLISH != '1'
+        run: |
+          set -euo pipefail
           if ! gh release view index >/dev/null 2>&1; then
             gh release create index --title "Search index" --latest=false \
               --notes "Prebuilt PyPI search index used by pipseek. Updated daily by the Search index workflow."
           fi
-          gh release upload index pypi-index.tsv.gz --clobber
+          RID=$(gh api "repos/$REPO/releases/tags/index" --jq .id)
+          asset_id() {
+            gh api --paginate "repos/$REPO/releases/$RID/assets" --jq ".[] | select(.name == \"$1\") | .id"
+          }
+          # Upload under a temporary name, then swap names, so clients never see a missing
+          # file for the length of an upload (as --clobber would cause).
+          publish() {
+            local name=$1
+            local stale; stale=$(asset_id "$name.new")
+            if [ -n "$stale" ]; then gh api -X DELETE "repos/$REPO/releases/assets/$stale"; fi
+            cp "$name" "$name.new"
+            gh release upload index "$name.new"
+            local new; new=$(asset_id "$name.new")
+            local old; old=$(asset_id "$name")
+            if [ -n "$old" ]; then gh api -X DELETE "repos/$REPO/releases/assets/$old"; fi
+            gh api -X PATCH "repos/$REPO/releases/assets/$new" -f name="$name" >/dev/null
+          }
+          publish pypi-index.tsv.gz
+          publish pypi-index.tsv.gz.sha256
+
+      - name: Keep the schedule alive
+        # GitHub turns off scheduled workflows after 60 days without repository activity.
+        # Re-enabling this workflow on every run resets that clock.
+        run: gh api -X PUT "repos/$REPO/actions/workflows/index.yml/enable"

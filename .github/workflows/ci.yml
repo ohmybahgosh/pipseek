@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -12,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.9", "3.13"]
+        python: ["3.9", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,3 +25,27 @@ jobs:
       - run: ruff check src tests
       - run: pytest -q
       - run: pipseek --version
+
+  # Builds the sdist and wheel the release workflow would publish, so packaging problems show
+  # up on a normal push instead of after a tag.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - name: Check what goes into the sdist
+        run: |
+          tar -tzf dist/*.tar.gz > files.txt
+          if grep -E '/(assets|\.github)/' files.txt; then
+            echo "The sdist should not include assets/ or .github/"; exit 1
+          fi
+          ls -la dist/
+      - name: Install the wheel and run it
+        run: |
+          python -m pip install dist/*.whl
+          pipseek --version

@@ -17,6 +17,7 @@ Output format (gzipped TSV, one project per line):
 Usage:
     python -m pipseek.build_index --out pypi-index.tsv.gz [--previous old.tsv.gz]
     python -m pipseek.build_index --out popular.tsv.gz --popular-only
+    python -m pipseek.build_index --check pypi-index.tsv.gz
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import argparse
 import gzip
 import os
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Iterable, Iterator
@@ -81,14 +83,40 @@ def parse_lines(lines: Iterable[str]) -> Iterator[Record]:
 
 def write_index(path: str, records: Iterable[Record]) -> int:
     count = 0
-    tmp = path + ".tmp"
-    with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=9) as fh:
-        fh.write(f"{HEADER} {int(time.time())}\n")
-        for name, serial, summary, keywords in records:
-            fh.write(f"{name}\t{serial}\t{summary}\t{keywords}\n")
-            count += 1
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=".index-", suffix=".tmp", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "wb") as raw, gzip.GzipFile(
+            fileobj=raw, mode="wb", compresslevel=9
+        ) as gz:
+            gz.write(f"{HEADER} {int(time.time())}\n".encode())
+            for name, serial, summary, keywords in records:
+                gz.write(f"{name}\t{serial}\t{summary}\t{keywords}\n".encode())
+                count += 1
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     return count
+
+
+MIN_RECORDS = 100_000
+MIN_SUMMARY_SHARE = 0.5
+
+
+def check_index(path: str, min_records: int = MIN_RECORDS) -> list[str]:
+    """Problems that should stop an index from being published (empty list when healthy)."""
+    rows = summaries = 0
+    for _, _, summary, _ in read_index(path):
+        rows += 1
+        summaries += bool(summary)
+    problems = []
+    if rows < min_records:
+        problems.append(f"only {rows:,} projects (expected at least {min_records:,})")
+    if rows and summaries < rows * MIN_SUMMARY_SHARE:
+        share = summaries / rows
+        problems.append(f"only {share:.0%} of projects have a summary (expected at least 50%)")
+    log(f"{path}: {rows:,} projects, {summaries:,} with summaries")
+    return problems
 
 
 def fetch_projects(session: requests.Session) -> dict[str, int]:
@@ -218,13 +246,23 @@ def log(msg: str) -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Build the pipseek search index.")
-    p.add_argument("--out", required=True, help="output .tsv.gz path")
+    p.add_argument("--out", help="output .tsv.gz path")
+    p.add_argument(
+        "--check", metavar="PATH", help="check an index file before publishing; exit 1 if unhealthy"
+    )
     p.add_argument("--previous", help="previous index to update incrementally")
     p.add_argument("--popular-only", action="store_true", help="only the ~15k most popular")
     p.add_argument("--time-budget", type=float, default=5 * 3600, help="seconds (default 5h)")
     p.add_argument("--concurrency", type=int, default=32)
     p.add_argument("--limit", type=int, help="fetch at most N projects (for testing)")
     args = p.parse_args(argv)
+    if args.check:
+        problems = check_index(args.check)
+        for problem in problems:
+            log(f"Not publishing: {problem}")
+        return 1 if problems else 0
+    if not args.out:
+        p.error("--out is required")
     build(
         args.out,
         previous=args.previous,

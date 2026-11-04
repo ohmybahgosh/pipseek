@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -29,10 +31,20 @@ _LIST_SCRIPT = (
 
 def _venv_python(root: str) -> Optional[str]:
     base = Path(root)
-    for candidate in (base / "bin" / "python", base / "Scripts" / "python.exe"):
+    candidates = (
+        base / "bin" / "python",  # venv and conda on Linux/macOS
+        base / "Scripts" / "python.exe",  # venv on Windows
+        base / "python.exe",  # conda on Windows keeps python.exe at the env root
+    )
+    for candidate in candidates:
         if candidate.exists():
             return str(candidate)
     return None
+
+
+def _is_store_stub(path: str) -> bool:
+    """The Microsoft Store "python" placeholder, which opens the Store instead of running."""
+    return "windowsapps" in path.lower()
 
 
 def find_python(explicit: Optional[str] = None) -> str:
@@ -44,11 +56,19 @@ def find_python(explicit: Optional[str] = None) -> str:
             found = _venv_python(root)
             if found:
                 return found
-    for name in ("python3", "python"):
+    windows = sys.platform == "win32"
+    for name in ("python", "python3") if windows else ("python3", "python"):
         found = shutil.which(name)
-        if found:
+        if found and not (windows and _is_store_stub(found)):
             return found
     return sys.executable
+
+
+def format_command(cmd: list[str]) -> str:
+    """A command line the user can paste into their shell, quoting paths with spaces."""
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(cmd)
+    return shlex.join(cmd)
 
 
 _MANAGED_SCRIPT = (
@@ -64,6 +84,7 @@ class PythonEnv:
         self.python = find_python(python)
         self._installed: Optional[dict[str, str]] = None
         self._managed: Optional[bool] = None
+        self._lock = threading.Lock()
 
     @property
     def externally_managed(self) -> bool:
@@ -84,21 +105,31 @@ class PythonEnv:
 
     @property
     def installed(self) -> dict[str, str]:
-        """Normalized name -> version for every distribution in the target environment."""
-        if self._installed is None:
-            self._installed = {}
-            try:
-                out = subprocess.run(
-                    [self.python, "-c", _LIST_SCRIPT],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=True,
-                ).stdout
-                self._installed = {normalize(k): v for k, v in json.loads(out).items()}
-            except (OSError, subprocess.SubprocessError, ValueError):
-                pass
-        return self._installed
+        """Normalized name -> version for every distribution in the target environment.
+
+        Search fetches packages from several threads at once, so the first caller lists the
+        environment while the others wait, and the dict is only published once it's complete.
+        """
+        installed = self._installed
+        if installed is not None:
+            return installed
+        with self._lock:
+            if self._installed is None:
+                self._installed = self._list_installed()
+            return self._installed
+
+    def _list_installed(self) -> dict[str, str]:
+        try:
+            out = subprocess.run(
+                [self.python, "-c", _LIST_SCRIPT],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=True,
+            ).stdout
+            return {normalize(k): v for k, v in json.loads(out).items()}
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return {}
 
     def version_of(self, name: str) -> Optional[str]:
         return self.installed.get(normalize(name))
@@ -112,5 +143,6 @@ class PythonEnv:
 
     def install(self, name: str, upgrade: bool = False) -> int:
         result = subprocess.run(self.install_command(name, upgrade))
-        self._installed = None
+        with self._lock:
+            self._installed = None
         return result.returncode
