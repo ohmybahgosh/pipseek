@@ -637,3 +637,78 @@ def test_wrong_checksum_is_still_rejected(tmp_path, http_index):
     data, _ = http_index
     session = _HttpIndex(data, checksums=["0" * 64])
     assert _http_load(tmp_path, session).source == "names"
+
+
+# The daily freshness check ------------------------------------------------------------------
+
+
+def _age_db(cache_dir, days, drop=()):
+    import sqlite3
+
+    conn = sqlite3.connect(str(cache_dir / "index.sqlite"))
+    then = str(time.time() - days * 86400)
+    conn.execute("UPDATE meta SET value = ? WHERE key IN ('built_at', 'checked_at')", (then,))
+    for key in drop:
+        conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+    conn.commit()
+    conn.close()
+
+
+def _cached_load(tmp_path, session):
+    return PackageIndex.load(session=session, cache=Cache(tmp_path / "cache"))
+
+
+def test_daily_check_skips_download_when_index_is_unchanged(tmp_path, http_index):
+    data, digest = http_index
+    session = _HttpIndex(data, checksums=[digest])
+    _http_load(tmp_path, session)
+    assert session.index_calls == 1
+
+    _cached_load(tmp_path, session)  # checked less than a day ago: no network at all
+    assert session.index_calls == 1
+
+    _age_db(tmp_path / "cache", days=2)
+    idx = _cached_load(tmp_path, session)  # same checksum: keep it, no 35 MB download
+    assert session.index_calls == 1
+    assert time.time() - float(index_mod._meta(idx.conn, "checked_at")) < 60
+
+
+def test_daily_check_downloads_a_changed_index(tmp_path, http_index):
+    data, digest = http_index
+    session = _HttpIndex(data, checksums=[digest])
+    _http_load(tmp_path, session)
+    _age_db(tmp_path / "cache", days=2)
+
+    newer = tmp_path / "newer.tsv.gz"
+    _write_index(newer, 60)
+    session.data = newer.read_bytes()
+    session.checksums = [hashlib.sha256(session.data).hexdigest()]
+    assert len(_cached_load(tmp_path, session)) == 60
+    assert session.index_calls == 2
+
+
+def test_daily_check_offline_keeps_the_index_for_a_week(tmp_path, http_index):
+    data, digest = http_index
+    session = _HttpIndex(data, checksums=[digest])
+    _http_load(tmp_path, session)
+
+    session.checksums = []  # the checksum can't be fetched
+    _age_db(tmp_path / "cache", days=3)
+    _cached_load(tmp_path, session)
+    assert session.index_calls == 1  # under a week old: kept
+
+    _age_db(tmp_path / "cache", days=8)
+    _cached_load(tmp_path, session)
+    assert session.index_calls == 2  # over a week: rebuilt
+
+
+def test_index_from_before_the_daily_check_is_replaced_once(tmp_path, http_index):
+    data, digest = http_index
+    session = _HttpIndex(data, checksums=[digest])
+    _http_load(tmp_path, session)
+    _age_db(tmp_path / "cache", days=2, drop=("sha256", "checked_at"))
+    _cached_load(tmp_path, session)
+    assert session.index_calls == 2
+    _age_db(tmp_path / "cache", days=2)
+    _cached_load(tmp_path, session)
+    assert session.index_calls == 2

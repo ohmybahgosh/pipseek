@@ -112,7 +112,7 @@ To run the latest code from GitHub instead of the PyPI release, use `pipx instal
 
 Upgrade later with `pipx upgrade pipseek` or `uv tool upgrade pipseek`.
 
-The first run downloads the search index (about 35 MB) and builds a local database from it, which takes about 10 seconds.  After that it refreshes on its own once a week, or whenever you pass `--refresh`.
+The first run downloads the search index (about 35 MB) and builds a local database from it, which takes about 10 seconds.  After that it checks once a day whether a newer index is out (a tiny checksum file) and downloads it only when it changed, so new packages show up within about a day.  `--refresh` downloads it again right away.
 
 > [!TIP]
 > **Upgrading from v1?**  The old `pipseek` was a single script, usually copied to `/usr/local/bin/pipseek`.  Remove it with `sudo rm /usr/local/bin/pipseek` so it doesn't shadow the new one, then run `hash -r` or open a new terminal.
@@ -247,7 +247,7 @@ Search results show the same check.  When the version you have installed has kno
 PyPI has no public full-text search API, so pipseek brings its own index:
 
 1. **A daily GitHub Action** ([`index.yml`](https://github.com/ohmybahgosh/pipseek/blob/main/.github/workflows/index.yml)) runs [`pipseek.build_index`](https://github.com/ohmybahgosh/pipseek/blob/main/src/pipseek/build_index.py).  The PyPI Simple API reports a change serial for every project, so the build only re-fetches projects that changed since yesterday, usually a few thousand.  It publishes `pypi-index.tsv.gz` (name, summary and keywords for every project) on the [`index` release](https://github.com/ohmybahgosh/pipseek/releases/tag/index).
-2. **On your machine,** pipseek downloads that file once a week, checks it against its published SHA-256 checksum, and streams it into a SQLite FTS5 database, so memory use stays low.  A download that's corrupt, oversized or mostly missing summaries is rejected, and the database you already have is kept.  A weekly watchdog workflow checks that the published index is fresh and keeps the daily job's schedule switched on.
+2. **On your machine,** pipseek checks once a day whether that file changed, downloads it when it did, checks it against its published SHA-256 checksum, and streams it into a SQLite FTS5 database, so memory use stays low.  A download that's corrupt, oversized or mostly missing summaries is rejected, and the database you already have is kept.  A weekly watchdog workflow checks that the published index is fresh and keeps the daily job's schedule switched on.
 3. **Each search** combines name matches, BM25 relevance over summaries and keywords, and 30-day download counts, then fetches live details for just the page you're viewing.
 4. **If the release can't be reached,** pipseek falls back to every project name from PyPI plus summaries for the 15,000 most popular projects, which ship inside the package, and tries for the full index again the next day.
 
@@ -275,7 +275,7 @@ pipseek identifies itself to these services as `pipseek/<version>` with a link t
 
 **Why not just use pypi.org/search?**  You can in a browser, but it can't be scripted any more: it sits behind a JavaScript challenge meant to stop bots.  pipseek doesn't try to get around that.  It uses PyPI's official APIs instead, which are made for tools.
 
-**How fresh are the results?**  The index is rebuilt every day, and pipseek downloads it weekly.  Versions, release dates and stats for the results you look at are always live (cached for an hour).
+**How fresh are the results?**  The index is rebuilt every day, and pipseek checks for a new one every day, so a package published today shows up in search within a day or so.  If the check can't be made (offline), pipseek keeps using its copy and rebuilds it after a week.  Versions, release dates and stats for the results you look at are always live (cached for an hour).
 
 **How much disk space does it use?**  About 175 MB for the search database, in `~/.cache/pipseek` on Linux, `~/Library/Caches/pipseek` on macOS, or `%LOCALAPPDATA%\pipseek` on Windows.  `pipseek --clear-cache` removes it, along with every other cached file.
 

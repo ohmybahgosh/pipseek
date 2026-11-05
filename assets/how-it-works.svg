@@ -51,7 +51,7 @@
   <!-- client -->
   <rect x="840" y="76" width="320" height="212" rx="12" fill="#13203a" stroke="#3ddc97" stroke-opacity=".6"/>
   <text x="860" y="110" fill="#e9f1ff" font-size="20" font-weight="700">Local SQLite FTS5 index</text>
-  <text x="860" y="140" fill="#93a3c4" font-size="15">built once, refreshed weekly</text>
+  <text x="860" y="140" fill="#93a3c4" font-size="15">checked daily, fetched if changed</text>
   <text x="860" y="176" fill="#e9f1ff" font-size="16" font-weight="600">Ranking blends</text>
   <text x="860" y="202" fill="#93a3c4" font-size="15">• name match (exact, prefix, words)</text>
   <text x="860" y="226" fill="#93a3c4" font-size="15">• BM25 over summary + keywords</text>

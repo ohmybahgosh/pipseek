@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.2 (2026-11)
+
+### Changed
+
+- pipseek now checks once a day whether a newer search index is out, instead of downloading a new one once a week.  The check fetches only the index's 84-byte checksum, and the 35 MB index is downloaded only when it changed, so a newly published package shows up in search within about a day instead of up to a week.  When the check can't be made, the local copy is used for up to a week, as before.
+
 ## 2.2.1 (2026-11)
 
 ### Fixes

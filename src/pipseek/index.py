@@ -49,7 +49,8 @@ TOP_URL = (
     "https://raw.githubusercontent.com/hugovk/top-pypi-packages/main/top-pypi-packages.min.json"
 )
 
-DB_TTL = 7 * 24 * 3600
+CHECK_TTL = 24 * 3600  # once a day, ask whether the published index has changed
+DB_TTL = 7 * 24 * 3600  # if that check can't be made, rebuild after a week anyway
 FALLBACK_TTL = 24 * 3600  # retry for the full index daily when we only have the fallback
 TOP_TTL = 7 * 24 * 3600
 TOP_RETRY = 6 * 3600  # after a failed download-stats fetch, don't retry for this long
@@ -141,9 +142,7 @@ class PackageIndex:
         if db_path.exists() and not refresh:
             conn = _open_existing(db_path)
             if conn is not None:
-                built = float(_meta(conn, "built_at") or 0)
-                ttl = DB_TTL if _meta(conn, "source") == "full" else FALLBACK_TTL
-                if time.time() - built < ttl:
+                if _still_current(conn, session, timeout):
                     return cls(conn, downloads)
                 conn.close()
 
@@ -425,6 +424,42 @@ def _rebuild_db(
             tmp.unlink()
 
 
+def _still_current(conn: sqlite3.Connection, session: requests.Session, timeout: float) -> bool:
+    """Whether the local database can be used as is.
+
+    A full index is checked once a day: pipseek fetches the published SHA-256 (84 bytes) and
+    only downloads the 35 MB index when it changed.  When the check can't be made, the local
+    copy is used for up to a week.
+    """
+    now = time.time()
+    built = float(_meta(conn, "built_at") or 0)
+    if _meta(conn, "source") != "full":
+        return now - built < FALLBACK_TTL
+    checked = max(built, float(_meta(conn, "checked_at") or 0))
+    if now - checked < CHECK_TTL:
+        return True
+    local = _meta(conn, "sha256")
+    remote = _published_checksum(session, timeout)
+    if remote is None:
+        return now - built < DB_TTL  # can't tell; fall back to the weekly rebuild
+    if local != remote:
+        return False  # a newer index is out
+    with contextlib.suppress(sqlite3.Error):
+        conn.execute("INSERT OR REPLACE INTO meta VALUES ('checked_at', ?)", (str(now),))
+        conn.commit()
+    return True
+
+
+def _published_checksum(session: requests.Session, timeout: float) -> Optional[str]:
+    url = index_url()
+    if url.startswith(("http://", "https://")):
+        return _fetch_checksum(session, url, min(timeout, 15))
+    path = url2pathname(urlparse(url).path) if url.startswith("file:") else url
+    with contextlib.suppress(OSError, IndexError):
+        return Path(path + ".sha256").read_text().split()[0].lower()
+    return None
+
+
 def _source_of(db_path: Path) -> Optional[str]:
     if not db_path.exists():
         return None
@@ -527,7 +562,7 @@ def _build_full(
     if opened is None:
         return False
     raw, expected, close, recheck = opened
-    digest = hashlib.sha256() if expected else None
+    digest = hashlib.sha256()  # always computed, so later runs can tell if the index changed
     compressed = _Meter(raw, MAX_INDEX_DOWNLOAD, digest)
     bundled = {normalize(n): (s, k) for n, s, k in bundled_records()}
     stats = {"rows": 0, "summaries": 0}
@@ -551,9 +586,8 @@ def _build_full(
     conn = _connect(tmp)
     try:
         _build(conn, records(), "full")
-        if digest is not None:
-            while compressed.readinto(bytearray(1 << 16)):
-                pass  # hash any trailing bytes the gzip reader didn't need
+        while compressed.readinto(bytearray(1 << 16)):
+            pass  # hash any trailing bytes the gzip reader didn't need
     except (
         requests.RequestException,
         OSError,
@@ -570,17 +604,27 @@ def _build_full(
         conn.close()
         close()
 
-    if digest is not None and digest.hexdigest() != expected:
+    actual = digest.hexdigest()
+    if expected is not None and actual != expected:
         # The index and its checksum are published one after the other, so a download that
         # lands between the two sees a mismatch.  Read the checksum again before giving up.
         expected = recheck()
-    if digest is not None and digest.hexdigest() != expected:
-        if progress:
-            progress("The downloaded index didn't match its checksum; using the fallback.")
-        return False
+        if actual != expected:
+            if progress:
+                progress("The downloaded index didn't match its checksum; using the fallback.")
+            return False
     # A partial or broken asset (too few rows, or most summaries missing) isn't trusted.
     rows, summaries = stats["rows"], stats["summaries"]
-    return rows >= MIN_INDEX_RECORDS and summaries >= rows * MIN_SUMMARY_SHARE
+    if rows < MIN_INDEX_RECORDS or summaries < rows * MIN_SUMMARY_SHARE:
+        return False
+    # Remember which index this is, so the daily check can skip unchanged downloads.
+    conn = _connect(tmp)
+    try:
+        conn.execute("INSERT OR REPLACE INTO meta VALUES ('sha256', ?)", (actual,))
+        conn.commit()
+    finally:
+        conn.close()
+    return True
 
 
 def _fallback_records(
