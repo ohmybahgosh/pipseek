@@ -599,9 +599,22 @@ class _Stream:
         pass
 
 
+_OPEN: list = []
+
+
+def _close_open():
+    # Windows can't replace a database file another connection still has open, just like two
+    # pipseek runs at once.  Close earlier indexes so each load here behaves like a new run.
+    while _OPEN:
+        _OPEN.pop().close()
+
+
 def _http_load(tmp_path, session):
+    _close_open()
     cache = Cache(tmp_path / "cache")
-    return PackageIndex.load(session=session, cache=cache, refresh=True)
+    idx = PackageIndex.load(session=session, cache=cache, refresh=True)
+    _OPEN.append(idx)
+    return idx
 
 
 @pytest.fixture
@@ -645,6 +658,7 @@ def test_wrong_checksum_is_still_rejected(tmp_path, http_index):
 def _age_db(cache_dir, days, drop=()):
     import sqlite3
 
+    _close_open()
     conn = sqlite3.connect(str(cache_dir / "index.sqlite"))
     then = str(time.time() - days * 86400)
     conn.execute("UPDATE meta SET value = ? WHERE key IN ('built_at', 'checked_at')", (then,))
@@ -655,7 +669,10 @@ def _age_db(cache_dir, days, drop=()):
 
 
 def _cached_load(tmp_path, session):
-    return PackageIndex.load(session=session, cache=Cache(tmp_path / "cache"))
+    _close_open()
+    idx = PackageIndex.load(session=session, cache=Cache(tmp_path / "cache"))
+    _OPEN.append(idx)
+    return idx
 
 
 def test_daily_check_skips_download_when_index_is_unchanged(tmp_path, http_index):
@@ -712,3 +729,33 @@ def test_index_from_before_the_daily_check_is_replaced_once(tmp_path, http_index
     _age_db(tmp_path / "cache", days=2)
     _cached_load(tmp_path, session)
     assert session.index_calls == 2
+
+
+def test_index_in_use_is_not_downloaded_again_every_run(tmp_path, http_index, monkeypatch):
+    data, digest = http_index
+    session = _HttpIndex(data, checksums=[digest])
+    _http_load(tmp_path, session)
+    _age_db(tmp_path / "cache", days=2)
+    newer = tmp_path / "newer.tsv.gz"  # a newer index is out...
+    _write_index(newer, 60)
+    session.data = newer.read_bytes()
+    session.checksums = [hashlib.sha256(session.data).hexdigest()]
+
+    def in_use(src, dst):
+        raise PermissionError("another pipseek has it open")  # ...but the file is locked
+
+    monkeypatch.setattr(index_mod.os, "replace", in_use)
+    _cached_load(tmp_path, session)
+    _cached_load(tmp_path, session)
+    assert session.index_calls == 2  # one attempt, not one per run
+
+
+def test_rejected_download_is_retried_tomorrow_not_every_run(tmp_path, http_index):
+    data, digest = http_index
+    session = _HttpIndex(data, checksums=[digest])
+    _http_load(tmp_path, session)
+    _age_db(tmp_path / "cache", days=2)
+    session.checksums = ["f" * 64]  # the published checksum doesn't match the file
+    _cached_load(tmp_path, session)
+    _cached_load(tmp_path, session)
+    assert session.index_calls == 2  # one attempt, then wait a day

@@ -154,6 +154,11 @@ class PackageIndex:
                 raise
             if progress:
                 progress("Could not refresh the index, using the cached copy.")
+            conn.close()
+            _mark_checked(db_path)  # try again tomorrow, not on every run
+            conn = _open_existing(db_path)
+            if conn is None:
+                raise
             return cls(conn, downloads)
 
         conn = _open_existing(db_path)
@@ -173,6 +178,9 @@ class PackageIndex:
             return None
         downloads = (cache.load("top-packages") or {}).get("data") or {}
         return cls(conn, downloads)
+
+    def close(self) -> None:
+        self.conn.close()
 
     # Info -----------------------------------------------------------------------------------
 
@@ -419,6 +427,7 @@ def _rebuild_db(
                 raise IndexUnavailable(f"Could not save the search database: {exc}") from exc
             if progress:
                 progress("Another pipseek is using the search database; keeping the current one.")
+            _mark_checked(db_path)  # don't download again on every run while it's in use
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()
@@ -448,6 +457,17 @@ def _still_current(conn: sqlite3.Connection, session: requests.Session, timeout:
         conn.execute("INSERT OR REPLACE INTO meta VALUES ('checked_at', ?)", (str(now),))
         conn.commit()
     return True
+
+
+def _mark_checked(db_path: Path) -> None:
+    """Record that the daily check ran, so the next one is a day away."""
+    conn = _open_existing(db_path)
+    if conn is None:
+        return
+    with contextlib.suppress(sqlite3.Error):
+        conn.execute("INSERT OR REPLACE INTO meta VALUES ('checked_at', ?)", (str(time.time()),))
+        conn.commit()
+    conn.close()
 
 
 def _published_checksum(session: requests.Session, timeout: float) -> Optional[str]:
